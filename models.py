@@ -32,4 +32,3 @@ class RegistroPonto:
 
     def to_dict(self) -> dict:
         return asdict(self)
-
