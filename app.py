@@ -3,8 +3,9 @@
 """
 App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /contents).
 - Permite registrar horário passado (ex.: agora 09:04 e salvar 08:09).
-- Bloqueio de horário futuro é opcional (ALLOW_FUTURE=false por padrão).
+- Bloqueio de horário futuro opcional (ALLOW_FUTURE=false por padrão).
 - UI compacta para janelas pequenas.
+- CORREÇÃO: widgets com key sem passar value, com inicialização em st.session_state para evitar warnings.
 
 Config (ordem de prioridade): st.secrets → variáveis de ambiente → defaults.
 Necessário: GITHUB_TOKEN (PAT) com escopo 'repo'.
@@ -211,17 +212,10 @@ store = GithubJSONStore(
     branch=GITHUB_BRANCH,
 )
 
-# ---------------------- Carregar dados ----------------------
-try:
-    data, current_sha = store.load(GITHUB_PATH)
-except Exception as e:
-    st.error(f"Falha ao carregar dados do GitHub: {e}")
-    st.stop()
-
-# ---------------------- Helpers de estado (hora/dia) ----------------------
+# ---------------------- Inicialização de estado (sem warnings) ----------------------
 def _init_session_defaults():
     if "usuario" not in st.session_state:
-        st.session_state["usuario"] = (os.getenv("USERNAME") or os.getenv("USER") or "usuario")
+        st.session_state["usuario"] = os.getenv("USERNAME") or os.getenv("USER") or "usuario"
     if "dia_sel" not in st.session_state:
         st.session_state["dia_sel"] = date.today()
     if "hora_sel" not in st.session_state:
@@ -229,6 +223,14 @@ def _init_session_defaults():
 
 _init_session_defaults()
 
+# ---------------------- Carregar dados ----------------------
+try:
+    data, current_sha = store.load(GITHUB_PATH)
+except Exception as e:
+    st.error(f"Falha ao carregar dados do GitHub: {e}")
+    st.stop()
+
+# ---------------------- Helpers de ajuste de hora ----------------------
 def _adjust_minutes(delta_min: int):
     """Ajusta hora selecionada somando delta_min (pode ser negativo), com rollover de dia."""
     dia_atual: date = st.session_state["dia_sel"]
@@ -241,34 +243,25 @@ def _adjust_minutes(delta_min: int):
 # ---------------------- UI ----------------------
 st.title("🕒 Ponto")
 
-usuario = st.text_input("Usuário", value=st.session_state["usuario"])
-st.session_state["usuario"] = usuario
+# Campo de usuário controlado só por key (sem value) para evitar warning
+st.text_input("Usuário", key="usuario")
 
 aba_hoje, aba_hist = st.tabs(["Hoje", "Histórico"])
 
 with aba_hoje:
-    # Linha compacta de inputs (usando session_state para refletir ajustes)
+    # Widgets com key sem value (usa somente session_state)
     c1, c2, c3 = st.columns([1.1, 1.1, 1.2])
     with c1:
-        st.date_input(
-            "Dia", key="dia_sel", value=st.session_state["dia_sel"],
-            label_visibility="collapsed"
-        )
+        st.date_input("Dia", key="dia_sel", label_visibility="collapsed")
         st.caption("Dia")
     with c2:
-        st.time_input(
-            "Hora", key="hora_sel", value=st.session_state["hora_sel"],
-            label_visibility="collapsed"
-        )
+        st.time_input("Hora", key="hora_sel", label_visibility="collapsed")
         st.caption("Hora")
     with c3:
-        rotulo = st.selectbox(
-            "Rótulo", ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"],
-            index=0, label_visibility="collapsed"
-        )
+        rotulo = st.selectbox("Rótulo", ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"], index=0, label_visibility="collapsed")
         st.caption("Rótulo")
 
-    # Observação e botões de ajuste rápido (-min)
+    # Observação e botões de ajuste rápido
     with st.expander("Observação (opcional)", expanded=False):
         observacao = st.text_input("Observação", value="", placeholder="Digite algo breve...")
 
@@ -301,7 +294,7 @@ with aba_hoje:
     with b1:
         if st.button("Agora", type="primary"):
             dt = agora
-            rec = RegistroPonto.novo(usuario, dt, label="Automático", tag=rotulo, obs=observacao)
+            rec = RegistroPonto.novo(st.session_state["usuario"], dt, label="Automático", tag=rotulo, obs=observacao)
             ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
             if ok:
                 st.success("Registrado (agora).")
@@ -313,7 +306,7 @@ with aba_hoje:
             if (not ALLOW_FUTURE) and (dt_sel > agora):
                 st.error("Horário no futuro não permitido. Ajuste para passado/atual.")
             else:
-                rec = RegistroPonto.novo(usuario, dt_sel, label="Manual", tag=rotulo, obs=observacao)
+                rec = RegistroPonto.novo(st.session_state["usuario"], dt_sel, label="Manual", tag=rotulo, obs=observacao)
                 ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
                 if ok:
                     st.success("Horário manual salvo.")
@@ -324,7 +317,7 @@ with aba_hoje:
     st.markdown("---")
     st.subheader("Hoje")
     dia_str = st.session_state["dia_sel"].isoformat()
-    registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == usuario]
+    registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
 
     def _key_time(r: dict) -> str:
         t = r.get("time", "00:00:00")
@@ -341,7 +334,7 @@ with aba_hist:
     st.subheader("Histórico")
     hf1, hf2 = st.columns([1, 1])
     with hf1:
-        usuario_f = st.text_input("Usuário (filtro)", value=usuario)
+        usuario_f = st.text_input("Usuário (filtro)", value=st.session_state["usuario"])
     with hf2:
         periodo = st.date_input("Período", value=(date.today().replace(day=1), date.today()))
 
