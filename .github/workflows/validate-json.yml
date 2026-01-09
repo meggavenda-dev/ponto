@@ -1,1 +1,41 @@
 
+name: Validar JSON de pontos
+on:
+  push:
+    paths:
+      - 'pontos.json'
+      - 'data/**.json'
+  pull_request:
+    paths:
+      - 'pontos.json'
+      - 'data/**.json'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validar JSON
+        run: |
+          python - <<'PY'
+          import json, glob, sys
+          files = ['pontos.json']
+          files += glob.glob('data/*.json')
+          ok = True
+          for f in files:
+            try:
+              with open(f, 'r', encoding='utf-8') as fh:
+                json.load(fh)
+              print(f"[OK] {f}")
+            except Exception as e:
+              ok = False
+              print(f"[ERRO] {f}: {e}")
+          sys.exit(0 if ok else 1)
+          PY
+
+
