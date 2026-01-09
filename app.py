@@ -3,11 +3,11 @@
 """
 App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /contents).
 - Usuário fixo: "Guilherme Henrique Cavalcante" (exibido, desabilitado).
-- ID decimal (inteiro) único por registro.
+- ID decimal (inteiro) único por registro novo (registros antigos com UUID continuam válidos).
 - Permite registrar horário passado (ex.: agora 09:04 e salvar 08:09).
-- Edição de horário de registros do dia (texto "HH:MM" ou seletor de hora).
+- Edição de horário (Hoje): texto 'HH:MM' ou seletor de hora; funciona com id numérico ou UUID.
 - Bloqueio de horário futuro opcional (ALLOW_FUTURE=false por padrão).
-- UI compacta + botões com on_click.
+- UI compacta + botões com on_click (sem st.rerun).
 - Exibição:
   • HOJE → Rótulo, Dia (dd/mm/aaaa), Hora
   • HISTÓRICO → Dia (dd/mm/aaaa), Rótulo, Hora
@@ -15,6 +15,7 @@ App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /conte
 Config (ordem de prioridade): st.secrets → variáveis de ambiente → defaults.
 Necessário: GITHUB_TOKEN (PAT) com escopo 'repo'.
 """
+
 from __future__ import annotations
 
 import base64
@@ -53,7 +54,7 @@ DEFAULT_BRANCH  = "main"
 DEFAULT_TZ_NAME = "America/Sao_Paulo"
 DEFAULT_ALLOW_FUTURE = "false"
 
-# Usuário fixo (pedido)
+# Usuário fixo
 USER_FIXED = "Guilherme Henrique Cavalcante"
 
 def cfg(key: str, default: str = "") -> str:
@@ -96,6 +97,7 @@ def existing_ids_int(records: List[dict]) -> Set[int]:
         try:
             s.add(int(r.get("id")))
         except Exception:
+            # ignora ids não numéricos (ex.: UUID)
             pass
     return s
 
@@ -115,12 +117,11 @@ def format_date_br(date_str: str) -> str:
         return date_str or ""
 
 def parse_hhmm_to_timestr(hhmm: str) -> Optional[str]:
-    """Aceita '08:09' e retorna '08:09:00'. Retorna None se inválido."""
+    """Aceita 'HH:MM' ou 'HH:MM:SS' e devolve 'HH:MM:SS'. Retorna None se inválido."""
     try:
         hhmm = (hhmm or "").strip()
         if not hhmm:
             return None
-        # aceita HH:MM ou HH:MM:SS
         if len(hhmm) == 5 and ":" in hhmm:
             dt = datetime.strptime(hhmm, "%H:%M")
             return dt.strftime("%H:%M:%S")
@@ -236,13 +237,13 @@ class GithubJSONStore:
             _time.sleep(sleep_seconds)
         return False
 
-    def replace_record(self, path: str, record_id: int, new_time: str) -> bool:
-        """Atualiza o campo 'time' de um registro pelo id, mantendo os demais campos."""
+    def replace_record(self, path: str, record_id: str, new_time: str) -> bool:
+        """Atualiza 'time' de um registro, comparando ids como string (suporta int e UUID)."""
         data, sha = self.load(path)
         found = False
         for r in data:
             try:
-                if int(r.get("id")) == int(record_id):
+                if str(r.get("id")) == str(record_id):
                     r["time"] = new_time
                     found = True
                     break
@@ -262,8 +263,7 @@ store = GithubJSONStore(
 
 # ---------------------- Inicialização de estado ----------------------
 def _init_session_defaults():
-    # Usuário sempre fixo
-    st.session_state["usuario"] = USER_FIXED
+    st.session_state["usuario"] = USER_FIXED  # usuário sempre fixo
     if "dia_sel" not in st.session_state:
         st.session_state["dia_sel"] = date.today()
     if "hora_sel" not in st.session_state:
@@ -379,34 +379,44 @@ with aba_hoje:
     registros_dia_all.sort(key=_key_time)
 
     if registros_dia_all:
-        # Mapeia opções: "Rótulo - Hora" → id
-        options = {f"{r.get('tag','?')} - {r.get('time','??:??:??')}": int(r.get("id")) for r in registros_dia_all if r.get("id") is not None}
-        choice = st.selectbox("Selecione o ponto", options=list(options.keys()))
-        chosen_id = options.get(choice)
+        # Lista de opções segura: inclui id na string para evitar duplicatas e não depender de conversão int
+        entries = []
+        for r in registros_dia_all:
+            rec_id = r.get("id")
+            if rec_id is None:
+                continue
+            display = f"{r.get('tag','?')} - {r.get('time','??:??:??')} (id {rec_id})"
+            entries.append((display, str(rec_id)))
 
-        # Entrada livre de horário 'HH:MM' + seletor de hora (ambos aceitos)
+        labels = [e[0] for e in entries]
+        choice_label = st.selectbox("Selecione o ponto", options=labels)
+        chosen_id = next((e[1] for e in entries if e[0] == choice_label), None)
+
+        # Entrada livre 'HH:MM' ou 'HH:MM:SS' + seletor de hora
         col_e1, col_e2 = st.columns([1.2, 1.2])
         with col_e1:
             time_str_input = st.text_input("Novo horário (HH:MM ou HH:MM:SS)", value="", placeholder="ex.: 08:09")
         with col_e2:
             time_picker = st.time_input("Ou escolha:", value=now_local(TZ).time().replace(microsecond=0))
 
-        # Resolve prioridade: se texto válido, usa texto; senão, usa time_input
         parsed_text = parse_hhmm_to_timestr(time_str_input)
         new_time_final = parsed_text if parsed_text else time_picker.strftime("%H:%M:%S")
 
-        # Valida futuro (respeitando ALLOW_FUTURE) usando a data do registro
+        # Valida futuro (respeitando ALLOW_FUTURE) usando a data 'dia_sel'
         dt_reg_base = datetime.strptime(dia_str + " " + new_time_final, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
         if (not ALLOW_FUTURE) and (dt_reg_base > agora):
             st.warning(f"Horário {new_time_final} está no futuro. Ajuste para passado/atual.")
         else:
             if st.button("Salvar edição", use_container_width=True):
-                ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
-                if ok:
-                    st.success(f"Horário atualizado para {new_time_final}.")
-                    data, current_sha = store.load(GITHUB_PATH)
+                if chosen_id is None:
+                    st.error("Seleção inválida.")
                 else:
-                    st.error("Falha ao atualizar registro no GitHub.")
+                    ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
+                    if ok:
+                        st.success(f"Horário atualizado para {new_time_final}.")
+                        data, current_sha = store.load(GITHUB_PATH)
+                    else:
+                        st.error("Falha ao atualizar registro no GitHub.")
     else:
         st.info("Sem pontos hoje para editar.")
 
