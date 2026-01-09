@@ -1,11 +1,8 @@
 
 # -*- coding: utf-8 -*-
 """
-App de Registro de Ponto - Streamlit + GitHub (JSON) como banco.
-Opção 2: Segredos no Streamlit Cloud (Settings → Secrets).
-- Aba "Hoje": registra ponto automático (agora) ou horário selecionado (manual).
-- Aba "Histórico": lista completa com filtros e download CSV.
-- Necessita do GITHUB_TOKEN (PAT) nos Secrets do Streamlit Cloud.
+App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON).
+Janela pensada para ~360px de largura (pequena).
 """
 from __future__ import annotations
 
@@ -22,18 +19,35 @@ import pandas as pd
 import streamlit as st
 from zoneinfo import ZoneInfo
 
-# ---------------------------------------------------------------------
-# Configuração da página
-# ---------------------------------------------------------------------
-st.set_page_config(
-    page_title="Registro de Ponto",
-    page_icon="🕒",
-    layout="centered",
-)
+# ---------------------- Página & Estilo compacto ----------------------
+st.set_page_config(page_title="Ponto", page_icon="🕒", layout="centered")
 
-# ---------------------------------------------------------------------
-# Defaults (só para fallback; no Cloud use Secrets)
-# ---------------------------------------------------------------------
+# CSS para compactar componentes
+COMPACT_CSS = """
+<style>
+/* reduzir largura máxima do container */
+div.block-container { max-width: 360px; padding-top: 0.5rem; }
+
+/* fonte geral levemente menor */
+html, body, [class*="css"] { font-size: 14px; }
+
+/* cabeçalhos mais enxutos */
+h1, h2, h3 { margin: 0.2rem 0 !important; }
+
+/* inputs e botões compactos */
+.stButton>button { padding: 0.25rem 0.6rem; font-size: 0.9rem; }
+.stDownloadButton>button { padding: 0.25rem 0.5rem; font-size: 0.85rem; }
+
+/* reduzir espaço vertical entre elementos */
+.css-1v3fvcr, .css-5rimss, .stMarkdown { margin-bottom: 0.5rem !important; }
+
+/* tabela/dataframe mais compacta */
+.stTable, .stDataFrame { font-size: 13px; }
+</style>
+"""
+st.markdown(COMPACT_CSS, unsafe_allow_html=True)
+
+# ---------------------- Defaults / Config ----------------------
 DEFAULT_OWNER   = "meggavenda-dev"
 DEFAULT_REPO    = "registro-ponto-db"
 DEFAULT_PATH    = "pontos.json"
@@ -41,7 +55,6 @@ DEFAULT_BRANCH  = "main"
 DEFAULT_TZ_NAME = "America/Sao_Paulo"
 
 def cfg(key: str, default: str = "") -> str:
-    """Lê primeiro st.secrets, depois env, senão aplica default."""
     if key in st.secrets:
         val = st.secrets.get(key)
         if isinstance(val, str) and val.strip():
@@ -56,29 +69,13 @@ GITHUB_REPO   = cfg("GITHUB_REPO",   DEFAULT_REPO)
 GITHUB_PATH   = cfg("GITHUB_PATH",   DEFAULT_PATH)
 GITHUB_BRANCH = cfg("GITHUB_BRANCH", DEFAULT_BRANCH)
 TIMEZONE_NAME = cfg("TIMEZONE",      DEFAULT_TZ_NAME)
-GITHUB_TOKEN  = cfg("GITHUB_TOKEN",  "")  # SEM default propositalmente (obrigatório)
+GITHUB_TOKEN  = cfg("GITHUB_TOKEN",  "")  # obrigatório
 
-# ---------------------------------------------------------------------
-# Guardas de segurança
-# ---------------------------------------------------------------------
 if not GITHUB_TOKEN:
-    st.error(
-        "Falta o **GITHUB_TOKEN (PAT)** para gravar no GitHub.\n\n"
-        "No Streamlit Cloud, vá em *Settings → Secrets* e cole:\n\n"
-        "```\n"
-        f"GITHUB_OWNER  = \"{DEFAULT_OWNER}\"\n"
-        f"GITHUB_REPO   = \"{DEFAULT_REPO}\"\n"
-        f"GITHUB_PATH   = \"{DEFAULT_PATH}\"\n"
-        f"GITHUB_BRANCH = \"{DEFAULT_BRANCH}\"\n"
-        "GITHUB_TOKEN  = \"ghp_SEU_TOKEN_AQUI\"\n"
-        f"TIMEZONE      = \"{DEFAULT_TZ_NAME}\"\n"
-        "```"
-    )
+    st.error("Defina o **GITHUB_TOKEN** em Settings → Secrets (Streamlit Cloud).")
     st.stop()
 
-# ---------------------------------------------------------------------
-# Utilitários de data/hora (timezone)
-# ---------------------------------------------------------------------
+# ---------------------- Utilitários ----------------------
 def get_tz(name: str | None) -> ZoneInfo:
     return ZoneInfo(name or DEFAULT_TZ_NAME)
 
@@ -87,9 +84,7 @@ TZ = get_tz(TIMEZONE_NAME)
 def now_local(tz: ZoneInfo) -> datetime:
     return datetime.now(tz)
 
-# ---------------------------------------------------------------------
-# Modelo de dados
-# ---------------------------------------------------------------------
+# ---------------------- Modelo ----------------------
 @dataclass
 class RegistroPonto:
     id: str
@@ -117,9 +112,7 @@ class RegistroPonto:
     def to_dict(self) -> dict:
         return asdict(self)
 
-# ---------------------------------------------------------------------
-# Camada de acesso ao JSON no GitHub (REST /contents)
-# ---------------------------------------------------------------------
+# ---------------------- Acesso GitHub ----------------------
 class GithubJSONStore:
     def __init__(self, owner: str, repo: str, token: str, branch: str = "main") -> None:
         self.owner = owner
@@ -136,7 +129,6 @@ class GithubJSONStore:
         return f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{path}"
 
     def load(self, path: str) -> Tuple[List[dict], Optional[str]]:
-        """Carrega conteúdo JSON e retorna (data, sha). Cria arquivo [] se não existir."""
         url = self._contents_url(path)
         r = requests.get(url, headers=self._headers, params={"ref": self.branch})
         if r.status_code == 200:
@@ -150,7 +142,6 @@ class GithubJSONStore:
                 data = []
             return data, sha
         elif r.status_code == 404:
-            # cria o arquivo com []
             empty_content = base64.b64encode("[]".encode("utf-8")).decode("utf-8")
             payload = {
                 "message": "Inicializa banco de pontos (arquivo JSON)",
@@ -166,7 +157,6 @@ class GithubJSONStore:
             raise RuntimeError(f"Erro ao carregar arquivo: {r.status_code} {r.text}")
 
     def commit(self, path: str, data: List[dict], sha: Optional[str], message: str) -> Optional[str]:
-        """Grava JSON no GitHub. Se sha for None, cria; senão atualiza. Retorna novo sha."""
         url = self._contents_url(path)
         content_str = json.dumps(data, ensure_ascii=False, indent=2)
         content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
@@ -181,20 +171,16 @@ class GithubJSONStore:
         if r.status_code in (200, 201):
             return r.json().get("content", {}).get("sha")
         if r.status_code == 409:
-            # conflito de versão (alguém gravou antes)
             return None
         raise RuntimeError(f"Erro ao gravar no GitHub: {r.status_code} {r.text}")
 
     def append_with_retry(self, path: str, record: dict, max_retries: int = 3, sleep_seconds: float = 0.8) -> bool:
-        """Adiciona um registro com tentativas para resolver conflitos (409)."""
         import time as _time
         for _ in range(max_retries):
             data, sha = self.load(path)
             data.append(record)
             new_sha = self.commit(
-                path,
-                data,
-                sha,
+                path, data, sha,
                 message=f"Ponto {record.get('usuario','?')} {record.get('date','')} {record.get('time','')}"
             )
             if new_sha:
@@ -202,9 +188,6 @@ class GithubJSONStore:
             _time.sleep(sleep_seconds)
         return False
 
-# ---------------------------------------------------------------------
-# Instância do "banco"
-# ---------------------------------------------------------------------
 store = GithubJSONStore(
     owner=GITHUB_OWNER,
     repo=GITHUB_REPO,
@@ -212,21 +195,17 @@ store = GithubJSONStore(
     branch=GITHUB_BRANCH,
 )
 
-# ---------------------------------------------------------------------
-# Carrega dados iniciais
-# ---------------------------------------------------------------------
+# ---------------------- Carregar dados ----------------------
 try:
     data, current_sha = store.load(GITHUB_PATH)
 except Exception as e:
     st.error(f"Falha ao carregar dados do GitHub: {e}")
     st.stop()
 
-# ---------------------------------------------------------------------
-# UI principal
-# ---------------------------------------------------------------------
-st.title("🕒 Registro de Ponto")
+# ---------------------- UI Compacta ----------------------
+st.title("🕒 Ponto")
 
-# Identidade do usuário (automático com possibilidade de editar)
+# Usuário com valor default curto
 default_user = os.getenv("USERNAME") or os.getenv("USER") or "usuario"
 usuario = st.text_input("Usuário", value=st.session_state.get("usuario", default_user))
 st.session_state["usuario"] = usuario
@@ -234,66 +213,67 @@ st.session_state["usuario"] = usuario
 aba_hoje, aba_hist = st.tabs(["Hoje", "Histórico"])
 
 with aba_hoje:
-    st.subheader("Bater ponto")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        dia = st.date_input("Dia", value=date.today())
-    with col2:
-        hora_selecionada = st.time_input("Hora", value=now_local(TZ).time().replace(microsecond=0))
-
-    rotulos_padrao = ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"]
-    rotulo = st.selectbox("Rótulo", options=rotulos_padrao, index=0)
-    observacao = st.text_input("Observação (opcional)")
-
-    c1, c2 = st.columns(2)
+    # Linha compacta de inputs
+    c1, c2, c3 = st.columns([1.1, 1.1, 1.2])
     with c1:
-        if st.button("Bater ponto agora", type="primary"):
+        dia = st.date_input("Dia", value=date.today(), label_visibility="collapsed")
+        st.caption("Dia")
+    with c2:
+        hora_selecionada = st.time_input("Hora", value=now_local(TZ).time().replace(microsecond=0), label_visibility="collapsed")
+        st.caption("Hora")
+    with c3:
+        rotulo = st.selectbox("Rótulo", ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"], index=0, label_visibility="collapsed")
+        st.caption("Rótulo")
+
+    with st.expander("Observação (opcional)", expanded=False):
+        observacao = st.text_input("Observação", value="", placeholder="Digite algo breve...")
+
+    b1, b2 = st.columns([1, 1])
+    with b1:
+        if st.button("Agora", type="primary"):
             dt = now_local(TZ)
             rec = RegistroPonto.novo(usuario, dt, label="Automático", tag=rotulo, obs=observacao)
             ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
             if ok:
-                st.success("Ponto registrado com sucesso.")
-                # Recarrega para mostrar o novo registro imediatamente
+                st.success("Registrado.")
                 data, current_sha = store.load(GITHUB_PATH)
             else:
-                st.error("Falha ao gravar no GitHub. Tente novamente.")
-
-    with c2:
-        if st.button("Salvar horário selecionado"):
+                st.error("Falha ao gravar.")
+    with b2:
+        if st.button("Salvar"):
             dt = datetime.combine(dia, hora_selecionada).replace(tzinfo=TZ)
             rec = RegistroPonto.novo(usuario, dt, label="Manual", tag=rotulo, obs=observacao)
             ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
             if ok:
-                st.success("Horário salvo.")
-                # Recarrega para mostrar o novo registro imediatamente
+                st.success("Salvo.")
                 data, current_sha = store.load(GITHUB_PATH)
             else:
-                st.error("Falha ao gravar no GitHub. Tente novamente.")
+                st.error("Falha ao gravar.")
 
-    st.divider()
-    st.subheader("Registros do dia")
-
+    st.markdown("---")
+    st.subheader("Hoje")
     dia_str = dia.isoformat()
     registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == usuario]
-    # Ordena por hora de forma robusta
+
+    # Ordenação compacta
     def _key_time(r: dict) -> str:
         t = r.get("time", "00:00:00")
         return t if isinstance(t, str) else "00:00:00"
     registros_dia.sort(key=_key_time)
 
     if registros_dia:
-        st.table(registros_dia)
+        # Exibir com altura limitada
+        df_dia = pd.DataFrame(registros_dia)
+        st.dataframe(df_dia, height=180, use_container_width=True)
     else:
-        st.info("Nenhum ponto para o dia selecionado.")
+        st.info("Sem pontos hoje.")
 
 with aba_hist:
-    st.subheader("Todos os pontos (histórico)")
-
-    colf1, colf2 = st.columns(2)
-    with colf1:
-        usuario_f = st.text_input("Filtrar por usuário (vazio = todos)", value=usuario)
-    with colf2:
+    st.subheader("Histórico")
+    hf1, hf2 = st.columns([1, 1])
+    with hf1:
+        usuario_f = st.text_input("Usuário (filtro)", value=usuario)
+    with hf2:
         periodo = st.date_input("Período", value=(date.today().replace(day=1), date.today()))
 
     if isinstance(periodo, tuple) and len(periodo) == 2:
@@ -304,22 +284,18 @@ with aba_hist:
     def in_period(r: dict) -> bool:
         try:
             d = datetime.strptime(r.get("date"), "%Y-%m-%d").date()
-            return (d >= dt_ini) and (d <= dt_fim)
+            return dt_ini <= d <= dt_fim
         except Exception:
             return True
 
     filtrados = [r for r in data if in_period(r) and (not usuario_f or r.get("usuario") == usuario_f)]
 
     if filtrados:
-        st.dataframe(filtrados, use_container_width=True)
         df = pd.DataFrame(filtrados)
+        st.dataframe(df, height=220, use_container_width=True)
         csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("Baixar CSV", data=csv, file_name="pontos.csv", mime="text/csv")
+        st.download_button("CSV", data=csv, file_name="pontos.csv", mime="text/csv")
     else:
-        st.info("Sem registros para o filtro aplicado.")
+        st.info("Sem registros no período.")
 
-st.caption(
-    "Dados salvos no GitHub (arquivo JSON). "
-    f"Owner: **{GITHUB_OWNER}**, Repo: **{GITHUB_REPO}**, Path: **{GITHUB_PATH}**, Branch: **{GITHUB_BRANCH}**."
-)
-
+st.caption(f"DB: {GITHUB_OWNER}/{GITHUB_REPO} · {GITHUB_PATH} ({GITHUB_BRANCH}) · TZ: {TIMEZONE_NAME}")
