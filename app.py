@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 App de Registro de Ponto - Streamlit + GitHub (JSON) como banco.
+Opção 2: Segredos no Streamlit Cloud (Settings → Secrets).
 - Aba "Hoje": registra ponto automático (agora) ou horário selecionado (manual).
 - Aba "Histórico": lista completa com filtros e download CSV.
-- Pré-configurado para owner 'meggavenda-dev' com fallback de secrets/env/defaults.
-- Necessita apenas do GITHUB_TOKEN (PAT) em .streamlit/secrets.toml ou variável de ambiente.
+- Necessita do GITHUB_TOKEN (PAT) nos Secrets do Streamlit Cloud.
 """
 from __future__ import annotations
 
@@ -32,28 +32,23 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------
-# Defaults fixos (pode ajustar aqui se precisar)
+# Defaults (só para fallback; no Cloud use Secrets)
 # ---------------------------------------------------------------------
 DEFAULT_OWNER   = "meggavenda-dev"
-DEFAULT_REPO    = "registro-ponto-db"   # ajuste aqui se seu repositório tiver outro nome
+DEFAULT_REPO    = "registro-ponto-db"
 DEFAULT_PATH    = "pontos.json"
 DEFAULT_BRANCH  = "main"
 DEFAULT_TZ_NAME = "America/Sao_Paulo"
 
-# ---------------------------------------------------------------------
-# Leitura de configs: secrets -> env -> defaults
-# ---------------------------------------------------------------------
 def cfg(key: str, default: str = "") -> str:
-    # 1) tenta st.secrets
+    """Lê primeiro st.secrets, depois env, senão aplica default."""
     if key in st.secrets:
         val = st.secrets.get(key)
         if isinstance(val, str) and val.strip():
             return val.strip()
-    # 2) tenta variável de ambiente
     v = os.getenv(key)
     if v and v.strip():
         return v.strip()
-    # 3) fallback default
     return default
 
 GITHUB_OWNER  = cfg("GITHUB_OWNER",  DEFAULT_OWNER)
@@ -69,15 +64,14 @@ GITHUB_TOKEN  = cfg("GITHUB_TOKEN",  "")  # SEM default propositalmente (obrigat
 if not GITHUB_TOKEN:
     st.error(
         "Falta o **GITHUB_TOKEN (PAT)** para gravar no GitHub.\n\n"
-        "Defina em `.streamlit/secrets.toml` ou como variável de ambiente.\n\n"
-        "Exemplo do secrets.toml:\n\n"
+        "No Streamlit Cloud, vá em *Settings → Secrets* e cole:\n\n"
         "```\n"
-        "GITHUB_OWNER  = \"meggavenda-dev\"\n"
-        "GITHUB_REPO   = \"registro-ponto-db\"\n"
-        "GITHUB_PATH   = \"pontos.json\"\n"
-        "GITHUB_BRANCH = \"main\"\n"
-        "GITHUB_TOKEN  = \"ghp_xxxxxxxxxxxxxxxxxxxxxxxxx\"\n"
-        "TIMEZONE      = \"America/Sao_Paulo\"\n"
+        f"GITHUB_OWNER  = \"{DEFAULT_OWNER}\"\n"
+        f"GITHUB_REPO   = \"{DEFAULT_REPO}\"\n"
+        f"GITHUB_PATH   = \"{DEFAULT_PATH}\"\n"
+        f"GITHUB_BRANCH = \"{DEFAULT_BRANCH}\"\n"
+        "GITHUB_TOKEN  = \"ghp_SEU_TOKEN_AQUI\"\n"
+        f"TIMEZONE      = \"{DEFAULT_TZ_NAME}\"\n"
         "```"
     )
     st.stop()
@@ -260,7 +254,8 @@ with aba_hoje:
             ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
             if ok:
                 st.success("Ponto registrado com sucesso.")
-                st.cache_data.clear()
+                # Recarrega para mostrar o novo registro imediatamente
+                data, current_sha = store.load(GITHUB_PATH)
             else:
                 st.error("Falha ao gravar no GitHub. Tente novamente.")
 
@@ -271,7 +266,8 @@ with aba_hoje:
             ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
             if ok:
                 st.success("Horário salvo.")
-                st.cache_data.clear()
+                # Recarrega para mostrar o novo registro imediatamente
+                data, current_sha = store.load(GITHUB_PATH)
             else:
                 st.error("Falha ao gravar no GitHub. Tente novamente.")
 
@@ -280,7 +276,11 @@ with aba_hoje:
 
     dia_str = dia.isoformat()
     registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == usuario]
-    registros_dia.sort(key=lambda r: r.get("time", "00:00:00"))
+    # Ordena por hora de forma robusta
+    def _key_time(r: dict) -> str:
+        t = r.get("time", "00:00:00")
+        return t if isinstance(t, str) else "00:00:00"
+    registros_dia.sort(key=_key_time)
 
     if registros_dia:
         st.table(registros_dia)
@@ -296,7 +296,6 @@ with aba_hist:
     with colf2:
         periodo = st.date_input("Período", value=(date.today().replace(day=1), date.today()))
 
-    # Normaliza período do date_input (tuple ou único)
     if isinstance(periodo, tuple) and len(periodo) == 2:
         dt_ini, dt_fim = periodo
     else:
@@ -323,3 +322,4 @@ st.caption(
     "Dados salvos no GitHub (arquivo JSON). "
     f"Owner: **{GITHUB_OWNER}**, Repo: **{GITHUB_REPO}**, Path: **{GITHUB_PATH}**, Branch: **{GITHUB_BRANCH}**."
 )
+
