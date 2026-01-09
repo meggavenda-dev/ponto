@@ -2,11 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /contents).
+- Usuário fixo: "Guilherme Henrique Cavalcante" (exibido, desabilitado).
 - ID decimal (inteiro) único por registro.
 - Permite registrar horário passado (ex.: agora 09:04 e salvar 08:09).
 - Bloqueio de horário futuro opcional (ALLOW_FUTURE=false por padrão).
 - UI compacta para janelas pequenas.
 - Correção: botões de ajuste usam on_click (sem st.rerun), evitando StreamlitAPIException.
+- Exibição:
+  • HOJE → somente Rótulo, Dia, Hora
+  • HISTÓRICO → somente Dia, Rótulo, Hora
 
 Config (ordem de prioridade): st.secrets → variáveis de ambiente → defaults.
 Necessário: GITHUB_TOKEN (PAT) com escopo 'repo'.
@@ -57,6 +61,9 @@ DEFAULT_PATH    = "pontos.json"
 DEFAULT_BRANCH  = "main"
 DEFAULT_TZ_NAME = "America/Sao_Paulo"
 DEFAULT_ALLOW_FUTURE = "false"
+
+# Usuário fixo (pedido)
+USER_FIXED = "Guilherme Henrique Cavalcante"
 
 def cfg(key: str, default: str = "") -> str:
     if key in st.secrets:
@@ -230,8 +237,8 @@ store = GithubJSONStore(
 
 # ---------------------- Inicialização de estado ----------------------
 def _init_session_defaults():
-    if "usuario" not in st.session_state:
-        st.session_state["usuario"] = os.getenv("USERNAME") or os.getenv("USER") or "usuario"
+    # Usuário sempre fixo
+    st.session_state["usuario"] = USER_FIXED
     if "dia_sel" not in st.session_state:
         st.session_state["dia_sel"] = date.today()
     if "hora_sel" not in st.session_state:
@@ -264,8 +271,8 @@ def set_now():
 # ---------------------- UI ----------------------
 st.title("🕒 Ponto")
 
-# Campo de usuário (key-only)
-st.text_input("Usuário", key="usuario")
+# Campo de usuário (fixo, desabilitado)
+st.text_input("Usuário", key="usuario", disabled=True)
 
 aba_hoje, aba_hist = st.tabs(["Hoje", "Histórico"])
 
@@ -304,9 +311,6 @@ with aba_hoje:
             st.warning(f"⏳ Horário **no futuro**: {dt_sel.strftime('%H:%M:%S')} — será aceito.")
         else:
             st.warning(f"⏳ Horário **no futuro**: {dt_sel.strftime('%H:%M:%S')} — ajuste para passado/atual.")
-
-    # Conjunto de IDs existentes como inteiros
-    existing_ids = existing_ids_int(data)
 
     b1, b2 = st.columns([1, 1])
     with b1:
@@ -354,6 +358,11 @@ with aba_hoje:
             "date": "Dia",
             "time": "Hora",
         })
+        # Ordena por Dia e Hora
+        try:
+            df_view = df_view.sort_values(by=["Dia", "Hora"])
+        except Exception:
+            pass
         st.dataframe(df_view, height=180, use_container_width=True)
     else:
         st.info("Sem pontos hoje.")
@@ -366,29 +375,51 @@ with aba_hist:
     with hf2:
         periodo = st.date_input("Período", value=(date.today().replace(day=1), date.today()))
 
+    # Normaliza o período
     if isinstance(periodo, tuple) and len(periodo) == 2:
         dt_ini, dt_fim = periodo
     else:
         dt_ini, dt_fim = date.today().replace(day=1), date.today()
 
+    # Filtro por período
     def in_period(r: dict) -> bool:
         try:
             d = datetime.strptime(r.get("date"), "%Y-%m-%d").date()
             return dt_ini <= d <= dt_fim
         except Exception:
-            return True
+            return False
 
-    filtrados = [r for r in data if in_period(r) and (not usuario_f or r.get("usuario") == usuario_f)]
+    filtrados = [
+        r for r in data
+        if in_period(r) and (not usuario_f or r.get("usuario") == usuario_f)
+    ]
 
     if filtrados:
+        # Monta DataFrame só com: date, tag, time
         df = pd.DataFrame(filtrados)
-        st.dataframe(df, height=220, use_container_width=True)
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("CSV", data=csv, file_name="pontos.csv", mime="text/csv")
+        cols = ["date", "tag", "time"]
+        cols_existentes = [c for c in cols if c in df.columns]
+        df_view = df[cols_existentes].rename(columns={
+            "date": "Dia",
+            "tag": "Rótulo",
+            "time": "Hora",
+        })
+        # Ordena por Dia e Hora
+        try:
+            df_view = df_view.sort_values(by=["Dia", "Hora"])
+        except Exception:
+            pass
+
+        # Exibição compacta
+        st.dataframe(df_view, height=220, use_container_width=True)
+
+        # Download CSV apenas dessas três colunas
+        csv = df_view.to_csv(index=False).encode("utf-8")
+        st.download_button("CSV", data=csv, file_name="pontos_historico.csv", mime="text/csv")
     else:
         st.info("Sem registros no período.")
 
 st.caption(
-    f"DB: {GITHUB_OWNER}/{GITHUB_REPO} · {GITHUB_PATH} ({GITHUB_BRANCH}) · TZ: {TIMEZONE_NAME} · "
+    f"Usuário: {USER_FIXED} · DB: {GITHUB_OWNER}/{GITHUB_REPO} · {GITHUB_PATH} ({GITHUB_BRANCH}) · TZ: {TIMEZONE_NAME} · "
     f"{'Futuro permitido' if ALLOW_FUTURE else 'Futuro bloqueado'}"
 )
