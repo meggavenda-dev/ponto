@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /contents).
+- ID decimal (inteiro) único por registro.
 - Permite registrar horário passado (ex.: agora 09:04 e salvar 08:09).
 - Bloqueio de horário futuro opcional (ALLOW_FUTURE=false por padrão).
 - UI compacta para janelas pequenas.
-- CORREÇÃO: widgets com key sem passar value, com inicialização em st.session_state para evitar warnings.
+- Sem warnings de widgets (key-only + session_state).
 
 Config (ordem de prioridade): st.secrets → variáveis de ambiente → defaults.
 Necessário: GITHUB_TOKEN (PAT) com escopo 'repo'.
@@ -24,10 +25,10 @@ from __future__ import annotations
 import base64
 import json
 import os
-import uuid
+import uuid  # (não usado para id, mantido caso queira migrar futuramente)
 from dataclasses import dataclass, asdict
 from datetime import datetime, date, timedelta, time as dtime
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Set
 
 import requests
 import pandas as pd
@@ -101,22 +102,39 @@ TZ = get_tz(TIMEZONE_NAME)
 def now_local(tz: ZoneInfo) -> datetime:
     return datetime.now(tz)
 
+def existing_ids_int(records: List[dict]) -> Set[int]:
+    s: Set[int] = set()
+    for r in records:
+        try:
+            s.add(int(r.get("id")))
+        except Exception:
+            # ignora ids não convertíveis (strings antigas etc.)
+            pass
+    return s
+
+def generate_decimal_id(existing: Set[int]) -> int:
+    """Gera ID inteiro baseado em timestamp (ms) e garante unicidade."""
+    base = int(now_local(TZ).timestamp() * 1000)
+    while base in existing:
+        base += 1
+    return base
+
 # ---------------------- Modelo ----------------------
 @dataclass
 class RegistroPonto:
-    id: str
+    id: int            # ID decimal (inteiro)
     usuario: str
-    date: str   # YYYY-MM-DD
-    time: str   # HH:MM:SS
-    label: str  # "Automático" | "Manual"
-    tag: str    # "Entrada" | "Saída" | "Intervalo" | "Retorno" | "Outro"
+    date: str          # YYYY-MM-DD
+    time: str          # HH:MM:SS
+    label: str         # "Automático" | "Manual"
+    tag: str           # "Entrada" | "Saída" | "Intervalo" | "Retorno" | "Outro"
     obs: Optional[str]
-    created_at: str  # ISO8601
+    created_at: str    # ISO8601
 
     @staticmethod
-    def novo(usuario: str, dt: datetime, label: str, tag: str, obs: Optional[str]) -> 'RegistroPonto':
+    def novo(id_int: int, usuario: str, dt: datetime, label: str, tag: str, obs: Optional[str]) -> 'RegistroPonto':
         return RegistroPonto(
-            id=str(uuid.uuid4()),
+            id=id_int,
             usuario=usuario,
             date=dt.date().isoformat(),
             time=dt.strftime("%H:%M:%S"),
@@ -212,7 +230,7 @@ store = GithubJSONStore(
     branch=GITHUB_BRANCH,
 )
 
-# ---------------------- Inicialização de estado (sem warnings) ----------------------
+# ---------------------- Inicialização de estado ----------------------
 def _init_session_defaults():
     if "usuario" not in st.session_state:
         st.session_state["usuario"] = os.getenv("USERNAME") or os.getenv("USER") or "usuario"
@@ -243,7 +261,7 @@ def _adjust_minutes(delta_min: int):
 # ---------------------- UI ----------------------
 st.title("🕒 Ponto")
 
-# Campo de usuário controlado só por key (sem value) para evitar warning
+# Campo de usuário (key-only)
 st.text_input("Usuário", key="usuario")
 
 aba_hoje, aba_hist = st.tabs(["Hoje", "Histórico"])
@@ -290,11 +308,15 @@ with aba_hoje:
         else:
             st.warning(f"⏳ Horário **no futuro**: {dt_sel.strftime('%H:%M:%S')} — ajuste para passado/atual.")
 
+    # Conjunto de IDs existentes como inteiros
+    existing_ids = existing_ids_int(data)
+
     b1, b2 = st.columns([1, 1])
     with b1:
         if st.button("Agora", type="primary"):
             dt = agora
-            rec = RegistroPonto.novo(st.session_state["usuario"], dt, label="Automático", tag=rotulo, obs=observacao)
+            new_id = generate_decimal_id(existing_ids)
+            rec = RegistroPonto.novo(new_id, st.session_state["usuario"], dt, label="Automático", tag=rotulo, obs=observacao)
             ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
             if ok:
                 st.success("Registrado (agora).")
@@ -306,7 +328,8 @@ with aba_hoje:
             if (not ALLOW_FUTURE) and (dt_sel > agora):
                 st.error("Horário no futuro não permitido. Ajuste para passado/atual.")
             else:
-                rec = RegistroPonto.novo(st.session_state["usuario"], dt_sel, label="Manual", tag=rotulo, obs=observacao)
+                new_id = generate_decimal_id(existing_ids)
+                rec = RegistroPonto.novo(new_id, st.session_state["usuario"], dt_sel, label="Manual", tag=rotulo, obs=observacao)
                 ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
                 if ok:
                     st.success("Horário manual salvo.")
@@ -319,14 +342,23 @@ with aba_hoje:
     dia_str = st.session_state["dia_sel"].isoformat()
     registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
 
+    # Ordenação por hora
     def _key_time(r: dict) -> str:
         t = r.get("time", "00:00:00")
         return t if isinstance(t, str) else "00:00:00"
     registros_dia.sort(key=_key_time)
 
     if registros_dia:
+        # Apenas Rótulo (tag), Dia (date) e Hora (time)
         df_dia = pd.DataFrame(registros_dia)
-        st.dataframe(df_dia, height=180, use_container_width=True)
+        cols = ["tag", "date", "time"]
+        cols_existentes = [c for c in cols if c in df_dia.columns]
+        df_view = df_dia[cols_existentes].rename(columns={
+            "tag": "Rótulo",
+            "date": "Dia",
+            "time": "Hora",
+        })
+        st.dataframe(df_view, height=180, use_container_width=True)
     else:
         st.info("Sem pontos hoje.")
 
