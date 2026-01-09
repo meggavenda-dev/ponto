@@ -9,8 +9,8 @@ App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /conte
 - UI compacta para janelas pequenas.
 - Correção: botões de ajuste usam on_click (sem st.rerun), evitando StreamlitAPIException.
 - Exibição:
-  • HOJE → somente Rótulo, Dia, Hora
-  • HISTÓRICO → somente Dia, Rótulo, Hora
+  • HOJE → somente Rótulo, Dia (dd/mm/aaaa), Hora
+  • HISTÓRICO → somente Dia (dd/mm/aaaa), Rótulo, Hora
 
 Config (ordem de prioridade): st.secrets → variáveis de ambiente → defaults.
 Necessário: GITHUB_TOKEN (PAT) com escopo 'repo'.
@@ -123,6 +123,14 @@ def generate_decimal_id(existing: Set[int]) -> int:
     while base in existing:
         base += 1
     return base
+
+def format_date_br(date_str: str) -> str:
+    """Converte 'YYYY-MM-DD' -> 'dd/mm/aaaa' para exibição."""
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        return d.strftime("%d/%m/%Y")
+    except Exception:
+        return date_str or ""
 
 # ---------------------- Modelo ----------------------
 @dataclass
@@ -343,7 +351,7 @@ with aba_hoje:
     dia_str = st.session_state["dia_sel"].isoformat()
     registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
 
-    # Ordenação por hora e exibição compacta (só Rótulo, Dia e Hora)
+    # Ordenação por hora (string HH:MM:SS) e visualização formatada
     def _key_time(r: dict) -> str:
         t = r.get("time", "00:00:00")
         return t if isinstance(t, str) else "00:00:00"
@@ -351,16 +359,19 @@ with aba_hoje:
 
     if registros_dia:
         df_dia = pd.DataFrame(registros_dia)
-        cols = ["tag", "date", "time"]
-        cols_existentes = [c for c in cols if c in df_dia.columns]
-        df_view = df_dia[cols_existentes].rename(columns={
+        # Cria coluna de exibição Dia_BR (dd/mm/aaaa) preservando a original para ordenação
+        df_dia["Dia_BR"] = df_dia["date"].apply(format_date_br)
+        # Seleciona e renomeia para exibição
+        df_view = df_dia[["tag", "Dia_BR", "time"]].rename(columns={
             "tag": "Rótulo",
-            "date": "Dia",
+            "Dia_BR": "Dia",
             "time": "Hora",
         })
-        # Ordena por Dia e Hora
+        # Ordena por Dia original + Hora para garantir ordem cronológica (se houver múltiplos dias)
         try:
-            df_view = df_view.sort_values(by=["Dia", "Hora"])
+            df_dia["Dia_ord"] = pd.to_datetime(df_dia["date"], format="%Y-%m-%d", errors="coerce")
+            df_view = df_view.join(df_dia[["Dia_ord"]])
+            df_view = df_view.sort_values(by=["Dia_ord", "Hora"]).drop(columns=["Dia_ord"])
         except Exception:
             pass
         st.dataframe(df_view, height=180, use_container_width=True)
@@ -395,25 +406,27 @@ with aba_hist:
     ]
 
     if filtrados:
-        # Monta DataFrame só com: date, tag, time
         df = pd.DataFrame(filtrados)
-        cols = ["date", "tag", "time"]
-        cols_existentes = [c for c in cols if c in df.columns]
-        df_view = df[cols_existentes].rename(columns={
-            "date": "Dia",
+        # Cria coluna de exibição Dia_BR (dd/mm/aaaa) preservando original p/ ordenação
+        df["Dia_BR"] = df["date"].apply(format_date_br)
+        # Seleciona e renomeia apenas as colunas desejadas
+        df_view = df[["Dia_BR", "tag", "time"]].rename(columns={
+            "Dia_BR": "Dia",
             "tag": "Rótulo",
             "time": "Hora",
         })
-        # Ordena por Dia e Hora
+        # Ordena por Dia original + Hora para garantir ordem cronológica
         try:
-            df_view = df_view.sort_values(by=["Dia", "Hora"])
+            df["Dia_ord"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
+            df_view = df_view.join(df[["Dia_ord"]])
+            df_view = df_view.sort_values(by=["Dia_ord", "Hora"]).drop(columns=["Dia_ord"])
         except Exception:
             pass
 
         # Exibição compacta
         st.dataframe(df_view, height=220, use_container_width=True)
 
-        # Download CSV apenas dessas três colunas
+        # Download CSV apenas dessas três colunas (com Dia em formato BR)
         csv = df_view.to_csv(index=False).encode("utf-8")
         st.download_button("CSV", data=csv, file_name="pontos_historico.csv", mime="text/csv")
     else:
