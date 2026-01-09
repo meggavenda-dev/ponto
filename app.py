@@ -1,21 +1,6 @@
 
 # -*- coding: utf-8 -*-
-"""
-App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /contents).
-- Usuário fixo: "Guilherme Henrique Cavalcante" (exibido, desabilitado).
-- ID decimal (inteiro) para novos registros (antigos com UUID continuam válidos).
-- Permite registrar horário passado; bloqueio opcional de futuro (ALLOW_FUTURE=false por padrão).
-- Registro com hora manual (HH:MM ou HH:MM:SS) tem prioridade sobre o seletor de hora.
-- Aba "Editar" separada da aba "Histórico".
-- UI compacta + botões com on_click (sem st.rerun).
-- Exibição:
-  • HOJE → Rótulo, Dia (dd/mm/aaaa), Hora
-  • HISTÓRICO → Dia (dd/mm/aaaa), Rótulo, Hora
-
-Config (ordem de prioridade): st.secrets → variáveis de ambiente → defaults.
-Necessário: GITHUB_TOKEN (PAT) com escopo 'repo'.
-"""
-
+"""App de Registro de Ponto — Streamlit + GitHub JSON via REST /contents."""
 from __future__ import annotations
 
 import base64
@@ -163,6 +148,7 @@ class RegistroPonto:
 
 # ---------------------- Acesso GitHub ----------------------
 class GithubJSONStore:
+    """Camada de acesso ao 'banco' no GitHub (arquivo JSON via GitHub REST API)."""
     def __init__(self, owner: str, repo: str, token: str, branch: str = "main") -> None:
         self.owner = owner
         self.repo = repo
@@ -178,6 +164,7 @@ class GithubJSONStore:
         return f"https://api.github.com/repos/{self.owner}/{self.repo}/contents/{path}"
 
     def load(self, path: str) -> Tuple[List[dict], Optional[str]]:
+        """Carrega conteúdo JSON e retorna (data, sha). Cria arquivo vazio [] se não existir."""
         url = self._contents_url(path)
         r = requests.get(url, headers=self._headers, params={"ref": self.branch})
         if r.status_code == 200:
@@ -206,6 +193,7 @@ class GithubJSONStore:
             raise RuntimeError(f"Erro ao carregar arquivo: {r.status_code} {r.text}")
 
     def commit(self, path: str, data: List[dict], sha: Optional[str], message: str) -> Optional[str]:
+        """Grava JSON no GitHub. Se sha for None, cria; senão atualiza."""
         url = self._contents_url(path)
         content_str = json.dumps(data, ensure_ascii=False, indent=2)
         content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
@@ -224,6 +212,7 @@ class GithubJSONStore:
         raise RuntimeError(f"Erro ao gravar no GitHub: {r.status_code} {r.text}")
 
     def append_with_retry(self, path: str, record: dict, max_retries: int = 3, sleep_seconds: float = 0.8) -> bool:
+        """Adiciona um registro com tentativa de resolução de conflitos (409)."""
         import time as _time
         for _ in range(max_retries):
             data, sha = self.load(path)
@@ -263,15 +252,11 @@ store = GithubJSONStore(
 
 # ---------------------- Inicialização de estado ----------------------
 def _init_session_defaults():
-    st.session_state["usuario"] = USER_FIXED  # usuário sempre fixo
-    if "dia_sel" not in st.session_state:
-        st.session_state["dia_sel"] = date.today()
-    if "hora_sel" not in st.session_state:
-        st.session_state["hora_sel"] = now_local(TZ).time().replace(microsecond=0)
-    if "hora_text_reg" not in st.session_state:
-        st.session_state["hora_text_reg"] = ""  # campo de hora manual no registro
-    if "dia_edit" not in st.session_state:
-        st.session_state["dia_edit"] = st.session_state["dia_sel"]  # dia padrão para edição
+    st.session_state.setdefault("usuario", USER_FIXED)      # usuário sempre fixo
+    st.session_state.setdefault("dia_sel", date.today())
+    st.session_state.setdefault("hora_sel", now_local(TZ).time().replace(microsecond=0))
+    st.session_state.setdefault("hora_text_reg", "")        # campo de hora manual no registro
+    st.session_state.setdefault("dia_edit", st.session_state["dia_sel"])  # dia padrão para edição
 
 _init_session_defaults()
 
@@ -282,7 +267,7 @@ except Exception as e:
     st.error(f"Falha ao carregar dados do GitHub: {e}")
     st.stop()
 
-# ---------------------- Callbacks para ajuste de hora/dia ----------------------
+# ---------------------- Callbacks ----------------------
 def shift_minutes(delta_min: int):
     dia_atual: date = st.session_state["dia_sel"]
     hora_atual: dtime = st.session_state["hora_sel"]
@@ -295,6 +280,33 @@ def set_now():
     st.session_state["dia_sel"] = date.today()
     st.session_state["hora_sel"] = now_local(TZ).time().replace(microsecond=0)
     st.session_state["hora_text_reg"] = ""  # limpa o campo manual
+
+def _save_now(rotulo: str, observacao: str):
+    agora = now_local(TZ)
+    new_id = generate_decimal_id(existing_ids_int(data))
+    rec = RegistroPonto.novo(new_id, st.session_state["usuario"], agora, label="Automático", tag=rotulo, obs=observacao)
+    ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
+    if ok:
+        st.success("Registrado (agora).")
+        st.session_state.update(hora_text_reg="")  # limpa manual
+        st.experimental_rerun()
+    else:
+        st.error("Falha ao gravar no GitHub.")
+
+def _save_manual(rotulo: str, observacao: str, dt_sel: datetime, allow_future: bool):
+    agora = now_local(TZ)
+    if (not allow_future) and (dt_sel > agora):
+        st.error("Horário no futuro não permitido. Ajuste para passado/atual.")
+        return
+    new_id = generate_decimal_id(existing_ids_int(data))
+    rec = RegistroPonto.novo(new_id, st.session_state["usuario"], dt_sel, label="Manual", tag=rotulo, obs=observacao)
+    ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
+    if ok:
+        st.success("Horário manual salvo.")
+        st.session_state.update(hora_text_reg="")  # limpa manual
+        st.experimental_rerun()
+    else:
+        st.error("Falha ao gravar no GitHub.")
 
 # ---------------------- UI ----------------------
 st.title("🕒 Ponto")
@@ -315,7 +327,9 @@ with aba_hoje:
         st.time_input("Hora", key="hora_sel", label_visibility="collapsed")
         st.caption("Hora")
     with c3:
-        rotulo = st.selectbox("Rótulo", ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"], index=0, label_visibility="collapsed")
+        rotulo = st.selectbox("Rótulo",
+                              ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"],
+                              index=0, label_visibility="collapsed")
         st.caption("Rótulo")
 
     # Hora manual (tem prioridade se válida)
@@ -334,7 +348,8 @@ with aba_hoje:
     # Resolve o horário selecionado (manual sobrescreve se válido)
     parsed_manual = parse_hhmm_to_timestr(st.session_state["hora_text_reg"])
     hora_final_str = parsed_manual if parsed_manual else st.session_state["hora_sel"].strftime("%H:%M:%S")
-    dt_sel = datetime.strptime(st.session_state["dia_sel"].isoformat() + " " + hora_final_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
+    dt_sel = datetime.strptime(st.session_state["dia_sel"].isoformat() + " " + hora_final_str,
+                               "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
 
     # Feedback relação com 'agora'
     agora = now_local(TZ)
@@ -353,31 +368,11 @@ with aba_hoje:
 
     b1, b2 = st.columns([1, 1])
     with b1:
-        if st.button("Agora", type="primary", use_container_width=True):
-            dt = agora
-            new_id = generate_decimal_id(existing_ids_int(data))  # recalcula por segurança
-            rec = RegistroPonto.novo(new_id, st.session_state["usuario"], dt, label="Automático", tag=rotulo, obs=observacao)
-            ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
-            if ok:
-                st.success("Registrado (agora).")
-                data, current_sha = store.load(GITHUB_PATH)
-            else:
-                st.error("Falha ao gravar no GitHub.")
+        st.button("Agora", type="primary", use_container_width=True,
+                  on_click=_save_now, args=(rotulo, observacao))
     with b2:
-        if st.button("Salvar", use_container_width=True):
-            if (not ALLOW_FUTURE) and (dt_sel > agora):
-                st.error("Horário no futuro não permitido. Ajuste para passado/atual.")
-            else:
-                new_id = generate_decimal_id(existing_ids_int(data))
-                rec = RegistroPonto.novo(new_id, st.session_state["usuario"], dt_sel, label="Manual", tag=rotulo, obs=observacao)
-                ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
-                if ok:
-                    st.success("Horário manual salvo.")
-                    # limpa hora manual para evitar reaproveitar indevidamente
-                    st.session_state["hora_text_reg"] = ""
-                    data, current_sha = store.load(GITHUB_PATH)
-                else:
-                    st.error("Falha ao gravar no GitHub.")
+        st.button("Salvar", use_container_width=True,
+                  on_click=_save_manual, args=(rotulo, observacao, dt_sel, ALLOW_FUTURE))
 
     # Exibição "Hoje"
     st.markdown("---")
@@ -506,7 +501,7 @@ with aba_edit:
                     ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
                     if ok:
                         st.success(f"Horário atualizado para {new_time_final}.")
-                        data, current_sha = store.load(GITHUB_PATH)
+                        st.experimental_rerun()
                     else:
                         st.error("Falha ao atualizar registro no GitHub.")
     else:
