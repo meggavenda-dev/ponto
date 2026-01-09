@@ -6,7 +6,7 @@ App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /conte
 - Permite registrar horário passado (ex.: agora 09:04 e salvar 08:09).
 - Bloqueio de horário futuro opcional (ALLOW_FUTURE=false por padrão).
 - UI compacta para janelas pequenas.
-- Sem warnings de widgets (key-only + session_state).
+- Correção: botões de ajuste usam on_click (sem st.rerun), evitando StreamlitAPIException.
 
 Config (ordem de prioridade): st.secrets → variáveis de ambiente → defaults.
 Necessário: GITHUB_TOKEN (PAT) com escopo 'repo'.
@@ -25,7 +25,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import uuid  # (não usado para id, mantido caso queira migrar futuramente)
 from dataclasses import dataclass, asdict
 from datetime import datetime, date, timedelta, time as dtime
 from typing import Optional, Tuple, List, Set
@@ -57,7 +56,7 @@ DEFAULT_REPO    = "registro-ponto-db"
 DEFAULT_PATH    = "pontos.json"
 DEFAULT_BRANCH  = "main"
 DEFAULT_TZ_NAME = "America/Sao_Paulo"
-DEFAULT_ALLOW_FUTURE = "false"  # "true" para permitir horário futuro
+DEFAULT_ALLOW_FUTURE = "false"
 
 def cfg(key: str, default: str = "") -> str:
     if key in st.secrets:
@@ -108,7 +107,6 @@ def existing_ids_int(records: List[dict]) -> Set[int]:
         try:
             s.add(int(r.get("id")))
         except Exception:
-            # ignora ids não convertíveis (strings antigas etc.)
             pass
     return s
 
@@ -248,15 +246,20 @@ except Exception as e:
     st.error(f"Falha ao carregar dados do GitHub: {e}")
     st.stop()
 
-# ---------------------- Helpers de ajuste de hora ----------------------
-def _adjust_minutes(delta_min: int):
-    """Ajusta hora selecionada somando delta_min (pode ser negativo), com rollover de dia."""
+# ---------------------- Callbacks para ajuste de hora/dia ----------------------
+def shift_minutes(delta_min: int):
+    """Callback chamado pelos botões de ajuste (-5/-10/-15/Agora). Sem st.rerun()."""
     dia_atual: date = st.session_state["dia_sel"]
     hora_atual: dtime = st.session_state["hora_sel"]
     base_dt = datetime.combine(dia_atual, hora_atual).replace(tzinfo=TZ)
     novo_dt = base_dt + timedelta(minutes=delta_min)
     st.session_state["dia_sel"] = novo_dt.date()
     st.session_state["hora_sel"] = novo_dt.time().replace(microsecond=0)
+
+def set_now():
+    """Callback para botão 'Agora' (ajusta dia/hora)."""
+    st.session_state["dia_sel"] = date.today()
+    st.session_state["hora_sel"] = now_local(TZ).time().replace(microsecond=0)
 
 # ---------------------- UI ----------------------
 st.title("🕒 Ponto")
@@ -279,21 +282,15 @@ with aba_hoje:
         rotulo = st.selectbox("Rótulo", ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"], index=0, label_visibility="collapsed")
         st.caption("Rótulo")
 
-    # Observação e botões de ajuste rápido
+    # Observação e botões de ajuste rápido (usando callbacks)
     with st.expander("Observação (opcional)", expanded=False):
         observacao = st.text_input("Observação", value="", placeholder="Digite algo breve...")
 
     a1, a2, a3, a4 = st.columns(4)
-    if a1.button("-5"):
-        _adjust_minutes(-5); st.rerun()
-    if a2.button("-10"):
-        _adjust_minutes(-10); st.rerun()
-    if a3.button("-15"):
-        _adjust_minutes(-15); st.rerun()
-    if a4.button("Agora"):
-        st.session_state["dia_sel"] = date.today()
-        st.session_state["hora_sel"] = now_local(TZ).time().replace(microsecond=0)
-        st.rerun()
+    a1.button("-5",  use_container_width=True, on_click=shift_minutes, args=(-5,))
+    a2.button("-10", use_container_width=True, on_click=shift_minutes, args=(-10,))
+    a3.button("-15", use_container_width=True, on_click=shift_minutes, args=(-15,))
+    a4.button("Agora", use_container_width=True, on_click=set_now)
 
     # Avaliar relação com 'agora'
     dt_sel = datetime.combine(st.session_state["dia_sel"], st.session_state["hora_sel"]).replace(tzinfo=TZ)
@@ -313,9 +310,9 @@ with aba_hoje:
 
     b1, b2 = st.columns([1, 1])
     with b1:
-        if st.button("Agora", type="primary"):
+        if st.button("Agora", type="primary", use_container_width=True):
             dt = agora
-            new_id = generate_decimal_id(existing_ids)
+            new_id = generate_decimal_id(existing_ids_int(data))  # recalcula por segurança
             rec = RegistroPonto.novo(new_id, st.session_state["usuario"], dt, label="Automático", tag=rotulo, obs=observacao)
             ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
             if ok:
@@ -324,11 +321,11 @@ with aba_hoje:
             else:
                 st.error("Falha ao gravar no GitHub.")
     with b2:
-        if st.button("Salvar"):  # manual (passado permitido; futuro depende do flag)
+        if st.button("Salvar", use_container_width=True):  # manual (passado permitido; futuro depende do flag)
             if (not ALLOW_FUTURE) and (dt_sel > agora):
                 st.error("Horário no futuro não permitido. Ajuste para passado/atual.")
             else:
-                new_id = generate_decimal_id(existing_ids)
+                new_id = generate_decimal_id(existing_ids_int(data))
                 rec = RegistroPonto.novo(new_id, st.session_state["usuario"], dt_sel, label="Manual", tag=rotulo, obs=observacao)
                 ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
                 if ok:
@@ -342,14 +339,13 @@ with aba_hoje:
     dia_str = st.session_state["dia_sel"].isoformat()
     registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
 
-    # Ordenação por hora
+    # Ordenação por hora e exibição compacta (só Rótulo, Dia e Hora)
     def _key_time(r: dict) -> str:
         t = r.get("time", "00:00:00")
         return t if isinstance(t, str) else "00:00:00"
     registros_dia.sort(key=_key_time)
 
     if registros_dia:
-        # Apenas Rótulo (tag), Dia (date) e Hora (time)
         df_dia = pd.DataFrame(registros_dia)
         cols = ["tag", "date", "time"]
         cols_existentes = [c for c in cols if c in df_dia.columns]
