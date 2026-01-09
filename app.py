@@ -5,24 +5,15 @@ App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /conte
 - Usuário fixo: "Guilherme Henrique Cavalcante" (exibido, desabilitado).
 - ID decimal (inteiro) único por registro.
 - Permite registrar horário passado (ex.: agora 09:04 e salvar 08:09).
+- Edição de horário de registros do dia (texto "HH:MM" ou seletor de hora).
 - Bloqueio de horário futuro opcional (ALLOW_FUTURE=false por padrão).
-- UI compacta para janelas pequenas.
-- Correção: botões de ajuste usam on_click (sem st.rerun), evitando StreamlitAPIException.
+- UI compacta + botões com on_click.
 - Exibição:
-  • HOJE → somente Rótulo, Dia (dd/mm/aaaa), Hora
-  • HISTÓRICO → somente Dia (dd/mm/aaaa), Rótulo, Hora
+  • HOJE → Rótulo, Dia (dd/mm/aaaa), Hora
+  • HISTÓRICO → Dia (dd/mm/aaaa), Rótulo, Hora
 
 Config (ordem de prioridade): st.secrets → variáveis de ambiente → defaults.
 Necessário: GITHUB_TOKEN (PAT) com escopo 'repo'.
-
-Secrets recomendados (Streamlit Cloud → Settings → Secrets):
-GITHUB_OWNER  = "meggavenda-dev"
-GITHUB_REPO   = "registro-ponto-db"
-GITHUB_PATH   = "pontos.json"
-GITHUB_BRANCH = "main"
-GITHUB_TOKEN  = "ghp_SEU_TOKEN_AQUI"
-TIMEZONE      = "America/Sao_Paulo"
-ALLOW_FUTURE  = "false"        # ou "true" para permitir horário futuro
 """
 from __future__ import annotations
 
@@ -85,17 +76,8 @@ ALLOW_FUTURE  = cfg("ALLOW_FUTURE",  DEFAULT_ALLOW_FUTURE).lower() in ("1", "tru
 
 if not GITHUB_TOKEN:
     st.error(
-        "Falta o **GITHUB_TOKEN (PAT)** para gravar no GitHub.\n\n"
-        "No Streamlit Cloud, vá em *Settings → Secrets* e cole:\n\n"
-        "```\n"
-        f"GITHUB_OWNER  = \"{DEFAULT_OWNER}\"\n"
-        f"GITHUB_REPO   = \"{DEFAULT_REPO}\"\n"
-        f"GITHUB_PATH   = \"{DEFAULT_PATH}\"\n"
-        f"GITHUB_BRANCH = \"{DEFAULT_BRANCH}\"\n"
-        "GITHUB_TOKEN  = \"ghp_SEU_TOKEN_AQUI\"\n"
-        f"TIMEZONE      = \"{DEFAULT_TZ_NAME}\"\n"
-        "ALLOW_FUTURE  = \"false\"\n"
-        "```"
+        "Falta o **GITHUB_TOKEN (PAT)** para gravar no GitHub.\n"
+        "Defina em Settings → Secrets (Streamlit Cloud) ou como variável de ambiente.\n"
     )
     st.stop()
 
@@ -131,6 +113,24 @@ def format_date_br(date_str: str) -> str:
         return d.strftime("%d/%m/%Y")
     except Exception:
         return date_str or ""
+
+def parse_hhmm_to_timestr(hhmm: str) -> Optional[str]:
+    """Aceita '08:09' e retorna '08:09:00'. Retorna None se inválido."""
+    try:
+        hhmm = (hhmm or "").strip()
+        if not hhmm:
+            return None
+        # aceita HH:MM ou HH:MM:SS
+        if len(hhmm) == 5 and ":" in hhmm:
+            dt = datetime.strptime(hhmm, "%H:%M")
+            return dt.strftime("%H:%M:%S")
+        elif len(hhmm) == 8 and hhmm.count(":") == 2:
+            dt = datetime.strptime(hhmm, "%H:%M:%S")
+            return dt.strftime("%H:%M:%S")
+        else:
+            return None
+    except Exception:
+        return None
 
 # ---------------------- Modelo ----------------------
 @dataclass
@@ -236,6 +236,23 @@ class GithubJSONStore:
             _time.sleep(sleep_seconds)
         return False
 
+    def replace_record(self, path: str, record_id: int, new_time: str) -> bool:
+        """Atualiza o campo 'time' de um registro pelo id, mantendo os demais campos."""
+        data, sha = self.load(path)
+        found = False
+        for r in data:
+            try:
+                if int(r.get("id")) == int(record_id):
+                    r["time"] = new_time
+                    found = True
+                    break
+            except Exception:
+                continue
+        if not found:
+            return False
+        new_sha = self.commit(path, data, sha, message=f"Atualiza horário id={record_id} para {new_time}")
+        return bool(new_sha)
+
 store = GithubJSONStore(
     owner=GITHUB_OWNER,
     repo=GITHUB_REPO,
@@ -263,7 +280,6 @@ except Exception as e:
 
 # ---------------------- Callbacks para ajuste de hora/dia ----------------------
 def shift_minutes(delta_min: int):
-    """Callback chamado pelos botões de ajuste (-5/-10/-15/Agora). Sem st.rerun()."""
     dia_atual: date = st.session_state["dia_sel"]
     hora_atual: dtime = st.session_state["hora_sel"]
     base_dt = datetime.combine(dia_atual, hora_atual).replace(tzinfo=TZ)
@@ -272,7 +288,6 @@ def shift_minutes(delta_min: int):
     st.session_state["hora_sel"] = novo_dt.time().replace(microsecond=0)
 
 def set_now():
-    """Callback para botão 'Agora' (ajusta dia/hora)."""
     st.session_state["dia_sel"] = date.today()
     st.session_state["hora_sel"] = now_local(TZ).time().replace(microsecond=0)
 
@@ -285,7 +300,7 @@ st.text_input("Usuário", key="usuario", disabled=True)
 aba_hoje, aba_hist = st.tabs(["Hoje", "Histórico"])
 
 with aba_hoje:
-    # Widgets com key sem value (usa somente session_state)
+    # Widgets do registro
     c1, c2, c3 = st.columns([1.1, 1.1, 1.2])
     with c1:
         st.date_input("Dia", key="dia_sel", label_visibility="collapsed")
@@ -297,7 +312,7 @@ with aba_hoje:
         rotulo = st.selectbox("Rótulo", ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"], index=0, label_visibility="collapsed")
         st.caption("Rótulo")
 
-    # Observação e botões de ajuste rápido (usando callbacks)
+    # Observação e botões de ajuste rápido
     with st.expander("Observação (opcional)", expanded=False):
         observacao = st.text_input("Observação", value="", placeholder="Digite algo breve...")
 
@@ -320,6 +335,9 @@ with aba_hoje:
         else:
             st.warning(f"⏳ Horário **no futuro**: {dt_sel.strftime('%H:%M:%S')} — ajuste para passado/atual.")
 
+    # Conjunto de IDs existentes como inteiros
+    existing_ids = existing_ids_int(data)
+
     b1, b2 = st.columns([1, 1])
     with b1:
         if st.button("Agora", type="primary", use_container_width=True):
@@ -333,7 +351,7 @@ with aba_hoje:
             else:
                 st.error("Falha ao gravar no GitHub.")
     with b2:
-        if st.button("Salvar", use_container_width=True):  # manual (passado permitido; futuro depende do flag)
+        if st.button("Salvar", use_container_width=True):
             if (not ALLOW_FUTURE) and (dt_sel > agora):
                 st.error("Horário no futuro não permitido. Ajuste para passado/atual.")
             else:
@@ -346,28 +364,65 @@ with aba_hoje:
                 else:
                     st.error("Falha ao gravar no GitHub.")
 
+    # ---------------------- Editor de horário (registros do dia) ----------------------
     st.markdown("---")
-    st.subheader("Hoje")
-    dia_str = st.session_state["dia_sel"].isoformat()
-    registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
+    st.subheader("Editar horário (Hoje)")
 
-    # Ordenação por hora (string HH:MM:SS) e visualização formatada
+    # Filtra registros do dia e do usuário
+    dia_str = st.session_state["dia_sel"].isoformat()
+    registros_dia_all = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
+
+    # Ordena por hora
     def _key_time(r: dict) -> str:
         t = r.get("time", "00:00:00")
         return t if isinstance(t, str) else "00:00:00"
-    registros_dia.sort(key=_key_time)
+    registros_dia_all.sort(key=_key_time)
+
+    if registros_dia_all:
+        # Mapeia opções: "Rótulo - Hora" → id
+        options = {f"{r.get('tag','?')} - {r.get('time','??:??:??')}": int(r.get("id")) for r in registros_dia_all if r.get("id") is not None}
+        choice = st.selectbox("Selecione o ponto", options=list(options.keys()))
+        chosen_id = options.get(choice)
+
+        # Entrada livre de horário 'HH:MM' + seletor de hora (ambos aceitos)
+        col_e1, col_e2 = st.columns([1.2, 1.2])
+        with col_e1:
+            time_str_input = st.text_input("Novo horário (HH:MM ou HH:MM:SS)", value="", placeholder="ex.: 08:09")
+        with col_e2:
+            time_picker = st.time_input("Ou escolha:", value=now_local(TZ).time().replace(microsecond=0))
+
+        # Resolve prioridade: se texto válido, usa texto; senão, usa time_input
+        parsed_text = parse_hhmm_to_timestr(time_str_input)
+        new_time_final = parsed_text if parsed_text else time_picker.strftime("%H:%M:%S")
+
+        # Valida futuro (respeitando ALLOW_FUTURE) usando a data do registro
+        dt_reg_base = datetime.strptime(dia_str + " " + new_time_final, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
+        if (not ALLOW_FUTURE) and (dt_reg_base > agora):
+            st.warning(f"Horário {new_time_final} está no futuro. Ajuste para passado/atual.")
+        else:
+            if st.button("Salvar edição", use_container_width=True):
+                ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
+                if ok:
+                    st.success(f"Horário atualizado para {new_time_final}.")
+                    data, current_sha = store.load(GITHUB_PATH)
+                else:
+                    st.error("Falha ao atualizar registro no GitHub.")
+    else:
+        st.info("Sem pontos hoje para editar.")
+
+    # ---------------------- Exibição Hoje ----------------------
+    st.markdown("---")
+    st.subheader("Hoje (Rótulo, Dia, Hora)")
+    registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
 
     if registros_dia:
         df_dia = pd.DataFrame(registros_dia)
-        # Cria coluna de exibição Dia_BR (dd/mm/aaaa) preservando a original para ordenação
         df_dia["Dia_BR"] = df_dia["date"].apply(format_date_br)
-        # Seleciona e renomeia para exibição
         df_view = df_dia[["tag", "Dia_BR", "time"]].rename(columns={
             "tag": "Rótulo",
             "Dia_BR": "Dia",
             "time": "Hora",
         })
-        # Ordena por Dia original + Hora para garantir ordem cronológica (se houver múltiplos dias)
         try:
             df_dia["Dia_ord"] = pd.to_datetime(df_dia["date"], format="%Y-%m-%d", errors="coerce")
             df_view = df_view.join(df_dia[["Dia_ord"]])
@@ -407,15 +462,12 @@ with aba_hist:
 
     if filtrados:
         df = pd.DataFrame(filtrados)
-        # Cria coluna de exibição Dia_BR (dd/mm/aaaa) preservando original p/ ordenação
         df["Dia_BR"] = df["date"].apply(format_date_br)
-        # Seleciona e renomeia apenas as colunas desejadas
         df_view = df[["Dia_BR", "tag", "time"]].rename(columns={
             "Dia_BR": "Dia",
             "tag": "Rótulo",
             "time": "Hora",
         })
-        # Ordena por Dia original + Hora para garantir ordem cronológica
         try:
             df["Dia_ord"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
             df_view = df_view.join(df[["Dia_ord"]])
@@ -423,10 +475,8 @@ with aba_hist:
         except Exception:
             pass
 
-        # Exibição compacta
         st.dataframe(df_view, height=220, use_container_width=True)
 
-        # Download CSV apenas dessas três colunas (com Dia em formato BR)
         csv = df_view.to_csv(index=False).encode("utf-8")
         st.download_button("CSV", data=csv, file_name="pontos_historico.csv", mime="text/csv")
     else:
