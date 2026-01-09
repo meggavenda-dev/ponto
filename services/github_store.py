@@ -67,14 +67,13 @@ class GithubJSONStore:
         r = requests.put(url, headers=self._headers, json=payload)
         if r.status_code in (200, 201):
             return r.json().get("content", {}).get("sha")
-        # Conflito: outro commit aconteceu; tente novamente (409)
         if r.status_code == 409:
-            return None
+            return None  # conflito (alguém gravou antes)
         raise RuntimeError(f"Erro ao gravar no GitHub: {r.status_code} {r.text}")
 
     def append_with_retry(self, path: str, record: dict, max_retries: int = 3, sleep_seconds: float = 0.8) -> bool:
         """Adiciona um registro com tentativa de resolução de conflitos (409)."""
-        for attempt in range(max_retries):
+        for _ in range(max_retries):
             data, sha = self.load(path)
             data.append(record)
             new_sha = self.commit(path, data, sha, message=f"Add ponto {record.get('usuario','?')} {record.get('date','')} {record.get('time','')}")
@@ -82,5 +81,3 @@ class GithubJSONStore:
                 return True
             time.sleep(sleep_seconds)
         return False
-
-
