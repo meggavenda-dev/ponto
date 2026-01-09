@@ -37,5 +37,3 @@ jobs:
               print(f"[ERRO] {f}: {e}")
           sys.exit(0 if ok else 1)
           PY
-
-
