@@ -3,10 +3,10 @@
 """
 App de Registro de Ponto (compacto) — Streamlit + GitHub (JSON via REST /contents).
 - Usuário fixo: "Guilherme Henrique Cavalcante" (exibido, desabilitado).
-- ID decimal (inteiro) único por registro novo (registros antigos com UUID continuam válidos).
-- Permite registrar horário passado (ex.: agora 09:04 e salvar 08:09).
-- Edição de horário (Hoje): texto 'HH:MM' ou seletor de hora; funciona com id numérico ou UUID.
-- Bloqueio de horário futuro opcional (ALLOW_FUTURE=false por padrão).
+- ID decimal (inteiro) para novos registros (antigos com UUID continuam válidos).
+- Permite registrar horário passado; bloqueio opcional de futuro (ALLOW_FUTURE=false por padrão).
+- Registro com hora manual (HH:MM ou HH:MM:SS) tem prioridade sobre o seletor de hora.
+- Aba "Editar" separada da aba "Histórico".
 - UI compacta + botões com on_click (sem st.rerun).
 - Exibição:
   • HOJE → Rótulo, Dia (dd/mm/aaaa), Hora
@@ -268,6 +268,10 @@ def _init_session_defaults():
         st.session_state["dia_sel"] = date.today()
     if "hora_sel" not in st.session_state:
         st.session_state["hora_sel"] = now_local(TZ).time().replace(microsecond=0)
+    if "hora_text_reg" not in st.session_state:
+        st.session_state["hora_text_reg"] = ""  # campo de hora manual no registro
+    if "dia_edit" not in st.session_state:
+        st.session_state["dia_edit"] = st.session_state["dia_sel"]  # dia padrão para edição
 
 _init_session_defaults()
 
@@ -290,6 +294,7 @@ def shift_minutes(delta_min: int):
 def set_now():
     st.session_state["dia_sel"] = date.today()
     st.session_state["hora_sel"] = now_local(TZ).time().replace(microsecond=0)
+    st.session_state["hora_text_reg"] = ""  # limpa o campo manual
 
 # ---------------------- UI ----------------------
 st.title("🕒 Ponto")
@@ -297,8 +302,9 @@ st.title("🕒 Ponto")
 # Campo de usuário (fixo, desabilitado)
 st.text_input("Usuário", key="usuario", disabled=True)
 
-aba_hoje, aba_hist = st.tabs(["Hoje", "Histórico"])
+aba_hoje, aba_hist, aba_edit = st.tabs(["Hoje", "Histórico", "Editar"])
 
+# ---------------------- ABA: HOJE ----------------------
 with aba_hoje:
     # Widgets do registro
     c1, c2, c3 = st.columns([1.1, 1.1, 1.2])
@@ -312,6 +318,9 @@ with aba_hoje:
         rotulo = st.selectbox("Rótulo", ["Entrada", "Saída", "Intervalo", "Retorno", "Outro"], index=0, label_visibility="collapsed")
         st.caption("Rótulo")
 
+    # Hora manual (tem prioridade se válida)
+    st.text_input("Hora manual (HH:MM ou HH:MM:SS)", key="hora_text_reg", placeholder="ex.: 08:09")
+
     # Observação e botões de ajuste rápido
     with st.expander("Observação (opcional)", expanded=False):
         observacao = st.text_input("Observação", value="", placeholder="Digite algo breve...")
@@ -322,18 +331,22 @@ with aba_hoje:
     a3.button("-15", use_container_width=True, on_click=shift_minutes, args=(-15,))
     a4.button("Agora", use_container_width=True, on_click=set_now)
 
-    # Avaliar relação com 'agora'
-    dt_sel = datetime.combine(st.session_state["dia_sel"], st.session_state["hora_sel"]).replace(tzinfo=TZ)
+    # Resolve o horário selecionado (manual sobrescreve se válido)
+    parsed_manual = parse_hhmm_to_timestr(st.session_state["hora_text_reg"])
+    hora_final_str = parsed_manual if parsed_manual else st.session_state["hora_sel"].strftime("%H:%M:%S")
+    dt_sel = datetime.strptime(st.session_state["dia_sel"].isoformat() + " " + hora_final_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
+
+    # Feedback relação com 'agora'
     agora = now_local(TZ)
     if dt_sel < agora:
-        st.info(f"⏱️ Horário **passado**: {dt_sel.strftime('%H:%M:%S')} — registro retroativo permitido.")
+        st.info(f"⏱️ Horário **passado**: {hora_final_str} — registro retroativo permitido.")
     elif dt_sel == agora.replace(microsecond=0):
         st.info("✅ Horário **agora**.")
     else:
         if ALLOW_FUTURE:
-            st.warning(f"⏳ Horário **no futuro**: {dt_sel.strftime('%H:%M:%S')} — será aceito.")
+            st.warning(f"⏳ Horário **no futuro**: {hora_final_str} — será aceito.")
         else:
-            st.warning(f"⏳ Horário **no futuro**: {dt_sel.strftime('%H:%M:%S')} — ajuste para passado/atual.")
+            st.warning(f"⏳ Horário **no futuro**: {hora_final_str} — ajuste para passado/atual.")
 
     # Conjunto de IDs existentes como inteiros
     existing_ids = existing_ids_int(data)
@@ -360,69 +373,16 @@ with aba_hoje:
                 ok = store.append_with_retry(GITHUB_PATH, rec.to_dict())
                 if ok:
                     st.success("Horário manual salvo.")
+                    # limpa hora manual para evitar reaproveitar indevidamente
+                    st.session_state["hora_text_reg"] = ""
                     data, current_sha = store.load(GITHUB_PATH)
                 else:
                     st.error("Falha ao gravar no GitHub.")
 
-    # ---------------------- Editor de horário (registros do dia) ----------------------
-    st.markdown("---")
-    st.subheader("Editar horário (Hoje)")
-
-    # Filtra registros do dia e do usuário
-    dia_str = st.session_state["dia_sel"].isoformat()
-    registros_dia_all = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
-
-    # Ordena por hora
-    def _key_time(r: dict) -> str:
-        t = r.get("time", "00:00:00")
-        return t if isinstance(t, str) else "00:00:00"
-    registros_dia_all.sort(key=_key_time)
-
-    if registros_dia_all:
-        # Lista de opções segura: inclui id na string para evitar duplicatas e não depender de conversão int
-        entries = []
-        for r in registros_dia_all:
-            rec_id = r.get("id")
-            if rec_id is None:
-                continue
-            display = f"{r.get('tag','?')} - {r.get('time','??:??:??')} (id {rec_id})"
-            entries.append((display, str(rec_id)))
-
-        labels = [e[0] for e in entries]
-        choice_label = st.selectbox("Selecione o ponto", options=labels)
-        chosen_id = next((e[1] for e in entries if e[0] == choice_label), None)
-
-        # Entrada livre 'HH:MM' ou 'HH:MM:SS' + seletor de hora
-        col_e1, col_e2 = st.columns([1.2, 1.2])
-        with col_e1:
-            time_str_input = st.text_input("Novo horário (HH:MM ou HH:MM:SS)", value="", placeholder="ex.: 08:09")
-        with col_e2:
-            time_picker = st.time_input("Ou escolha:", value=now_local(TZ).time().replace(microsecond=0))
-
-        parsed_text = parse_hhmm_to_timestr(time_str_input)
-        new_time_final = parsed_text if parsed_text else time_picker.strftime("%H:%M:%S")
-
-        # Valida futuro (respeitando ALLOW_FUTURE) usando a data 'dia_sel'
-        dt_reg_base = datetime.strptime(dia_str + " " + new_time_final, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
-        if (not ALLOW_FUTURE) and (dt_reg_base > agora):
-            st.warning(f"Horário {new_time_final} está no futuro. Ajuste para passado/atual.")
-        else:
-            if st.button("Salvar edição", use_container_width=True):
-                if chosen_id is None:
-                    st.error("Seleção inválida.")
-                else:
-                    ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
-                    if ok:
-                        st.success(f"Horário atualizado para {new_time_final}.")
-                        data, current_sha = store.load(GITHUB_PATH)
-                    else:
-                        st.error("Falha ao atualizar registro no GitHub.")
-    else:
-        st.info("Sem pontos hoje para editar.")
-
-    # ---------------------- Exibição Hoje ----------------------
+    # Exibição "Hoje"
     st.markdown("---")
     st.subheader("Hoje (Rótulo, Dia, Hora)")
+    dia_str = st.session_state["dia_sel"].isoformat()
     registros_dia = [r for r in data if r.get("date") == dia_str and r.get("usuario") == st.session_state["usuario"]]
 
     if registros_dia:
@@ -443,6 +403,7 @@ with aba_hoje:
     else:
         st.info("Sem pontos hoje.")
 
+# ---------------------- ABA: HISTÓRICO ----------------------
 with aba_hist:
     st.subheader("Histórico")
     hf1, hf2 = st.columns([1, 1])
@@ -491,6 +452,65 @@ with aba_hist:
         st.download_button("CSV", data=csv, file_name="pontos_historico.csv", mime="text/csv")
     else:
         st.info("Sem registros no período.")
+
+# ---------------------- ABA: EDITAR ----------------------
+with aba_edit:
+    st.subheader("Editar horário (por dia)")
+    # Escolhe o dia para editar (por padrão, o mesmo de "Hoje")
+    st.date_input("Dia para editar", key="dia_edit")
+    dia_edit_iso = st.session_state["dia_edit"].isoformat()
+
+    # Filtra registros do dia selecionado e do usuário
+    registros_edit = [r for r in data if r.get("date") == dia_edit_iso and r.get("usuario") == st.session_state["usuario"]]
+
+    # Ordena por hora
+    def _key_time(r: dict) -> str:
+        t = r.get("time", "00:00:00")
+        return t if isinstance(t, str) else "00:00:00"
+    registros_edit.sort(key=_key_time)
+
+    if registros_edit:
+        # Opções: exibe rótulo + hora + id para desambiguar
+        entries = []
+        for r in registros_edit:
+            rec_id = r.get("id")
+            if rec_id is None:
+                continue
+            display = f"{r.get('tag','?')} - {r.get('time','??:??:??')} (id {rec_id})"
+            entries.append((display, str(rec_id)))
+
+        labels = [e[0] for e in entries]
+        choice_label = st.selectbox("Selecione o ponto", options=labels, key="edit_choice_label")
+        chosen_id = next((e[1] for e in entries if e[0] == choice_label), None)
+
+        # Entrada livre 'HH:MM' ou 'HH:MM:SS' + seletor de hora
+        col_e1, col_e2 = st.columns([1.2, 1.2])
+        with col_e1:
+            time_str_input = st.text_input("Novo horário (HH:MM ou HH:MM:SS)", key="edit_time_text", placeholder="ex.: 08:09")
+        with col_e2:
+            time_picker = st.time_input("Ou escolha:", key="edit_time_picker", value=now_local(TZ).time().replace(microsecond=0))
+
+        parsed_text = parse_hhmm_to_timestr(time_str_input)
+        new_time_final = parsed_text if parsed_text else time_picker.strftime("%H:%M:%S")
+
+        # Valida futuro conforme flag, usando 'dia_edit'
+        agora = now_local(TZ)
+        dt_edit_base = datetime.strptime(dia_edit_iso + " " + new_time_final, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
+        if (not ALLOW_FUTURE) and (dt_edit_base > agora):
+            st.warning(f"Horário {new_time_final} está no futuro. Ajuste para passado/atual.")
+        else:
+            if st.button("Salvar edição", use_container_width=True, key="edit_save_btn"):
+                if chosen_id is None:
+                    st.error("Seleção inválida.")
+                else:
+                    ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
+                    if ok:
+                        st.success(f"Horário atualizado para {new_time_final}.")
+                        data, current_sha = store.load(GITHUB_PATH)
+                    else:
+                        st.error("Falha ao atualizar registro no GitHub.")
+    else:
+        st.info("Sem pontos para o dia selecionado.")
 
 st.caption(
     f"Usuário: {USER_FIXED} · DB: {GITHUB_OWNER}/{GITHUB_REPO} · {GITHUB_PATH} ({GITHUB_BRANCH}) · TZ: {TIMEZONE_NAME} · "
