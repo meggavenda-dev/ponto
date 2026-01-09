@@ -10,4 +10,3 @@ def get_tz(name: str | None) -> ZoneInfo:
 
 def now_local(tz: ZoneInfo) -> datetime:
     return datetime.now(tz)
-
