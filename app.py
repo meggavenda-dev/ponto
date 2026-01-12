@@ -289,7 +289,7 @@ def _save_now(rotulo: str, observacao: str):
     if ok:
         st.success("Registrado (agora).")
         st.session_state.update(hora_text_reg="")  # limpa manual
-        st.experimental_rerun()
+        st.rerun()  # substitui experimental_rerun
     else:
         st.error("Falha ao gravar no GitHub.")
 
@@ -304,7 +304,7 @@ def _save_manual(rotulo: str, observacao: str, dt_sel: datetime, allow_future: b
     if ok:
         st.success("Horário manual salvo.")
         st.session_state.update(hora_text_reg="")  # limpa manual
-        st.experimental_rerun()
+        st.rerun()  # substitui experimental_rerun
     else:
         st.error("Falha ao gravar no GitHub.")
 
@@ -501,7 +501,7 @@ with aba_edit:
                     ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
                     if ok:
                         st.success(f"Horário atualizado para {new_time_final}.")
-                        st.experimental_rerun()
+                        st.rerun()  # substitui experimental_rerun
                     else:
                         st.error("Falha ao atualizar registro no GitHub.")
     else:
@@ -511,3 +511,4 @@ st.caption(
     f"Usuário: {USER_FIXED} · DB: {GITHUB_OWNER}/{GITHUB_REPO} · {GITHUB_PATH} ({GITHUB_BRANCH}) · TZ: {TIMEZONE_NAME} · "
     f"{'Futuro permitido' if ALLOW_FUTURE else 'Futuro bloqueado'}"
 )
+
