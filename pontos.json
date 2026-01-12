@@ -58,5 +58,15 @@
     "tag": "Saída",
     "obs": "",
     "created_at": "2026-01-12T12:02:00-03:00"
+  },
+  {
+    "id": 1768250442259,
+    "usuario": "Guilherme Henrique Cavalcante",
+    "date": "2026-01-12",
+    "time": "17:40:42",
+    "label": "Automático",
+    "tag": "Entrada",
+    "obs": "",
+    "created_at": "2026-01-12T17:40:42.259881-03:00"
   }
 ]
