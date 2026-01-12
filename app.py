@@ -398,9 +398,11 @@ with aba_hoje:
     else:
         st.info("Sem pontos hoje.")
 
-# ---------------------- ABA: HISTÓRICO ----------------------
+# ---------------------- ABA: HISTÓRICO (uma linha por dia) ----------------------
 with aba_hist:
-    st.subheader("Histórico")
+    st.subheader("Histórico (dia em uma linha)")
+
+    # Filtros
     hf1, hf2 = st.columns([1, 1])
     with hf1:
         usuario_f = st.text_input("Usuário (filtro)", value=st.session_state["usuario"])
@@ -413,7 +415,7 @@ with aba_hist:
     else:
         dt_ini, dt_fim = date.today().replace(day=1), date.today()
 
-    # Filtro por período
+    # Função: está no período?
     def in_period(r: dict) -> bool:
         try:
             d = datetime.strptime(r.get("date"), "%Y-%m-%d").date()
@@ -421,30 +423,60 @@ with aba_hist:
         except Exception:
             return False
 
+    # Filtra dados
     filtrados = [
         r for r in data
         if in_period(r) and (not usuario_f or r.get("usuario") == usuario_f)
     ]
 
     if filtrados:
+        # DataFrame base
         df = pd.DataFrame(filtrados)
-        df["Dia_BR"] = df["date"].apply(format_date_br)
-        df_view = df[["Dia_BR", "tag", "time"]].rename(columns={
-            "Dia_BR": "Dia",
-            "tag": "Rótulo",
-            "time": "Hora",
-        })
+        # Garantir colunas esperadas
+        for col in ["date", "time", "tag"]:
+            if col not in df.columns:
+                df[col] = ""
+
+        # Ordena por data/hora para evitar "fora de ordem"
         try:
             df["Dia_ord"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
-            df_view = df_view.join(df[["Dia_ord"]])
-            df_view = df_view.sort_values(by=["Dia_ord", "Hora"]).drop(columns=["Dia_ord"])
         except Exception:
-            pass
+            df["Dia_ord"] = pd.to_datetime(df["date"], errors="coerce")
 
-        st.dataframe(df_view, height=220, use_container_width=True)
+        df = df.sort_values(by=["Dia_ord", "time"])
 
+        # Monta string "HH:MM:SS (Rótulo)" por registro
+        def _fmt_point(row) -> str:
+            hhmmss = row.get("time", "")
+            tag = row.get("tag", "")
+            return f"{hhmmss} ({tag})" if hhmmss or tag else ""
+
+        df["pt_fmt"] = df.apply(_fmt_point, axis=1)
+
+        # Agrega por dia: concatena com " · "
+        agg = (
+            df.groupby("date", as_index=False)["pt_fmt"]
+              .apply(lambda s: " · ".join([x for x in s.tolist() if x]))
+        )
+        agg = agg.rename(columns={"pt_fmt": "Pontos do dia"})
+
+        # Coluna dia em BR e ordenação
+        agg["Dia_BR"] = agg["date"].apply(format_date_br)
+        try:
+            agg["Dia_ord"] = pd.to_datetime(agg["date"], format="%Y-%m-%d", errors="coerce")
+        except Exception:
+            agg["Dia_ord"] = pd.to_datetime(agg["date"], errors="coerce")
+
+        # Visualização final
+        df_view = agg[["Dia_BR", "Pontos do dia", "Dia_ord"]].sort_values("Dia_ord").drop(columns=["Dia_ord"])
+        df_view = df_view.rename(columns={"Dia_BR": "Dia"})
+
+        st.dataframe(df_view, height=280, use_container_width=True)
+
+        # CSV para download
         csv = df_view.to_csv(index=False).encode("utf-8")
-        st.download_button("CSV", data=csv, file_name="pontos_historico.csv", mime="text/csv")
+        st.download_button("CSV (dia e pontos agregados)", data=csv,
+                           file_name="pontos_historico_por_dia.csv", mime="text/csv")
     else:
         st.info("Sem registros no período.")
 
