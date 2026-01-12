@@ -14,6 +14,7 @@ import requests
 import pandas as pd
 import streamlit as st
 from zoneinfo import ZoneInfo
+import html as html_escape  # para escapar atributos de tooltip com segurança
 
 # ---------------------- Página & Estilo ----------------------
 st.set_page_config(page_title="Ponto", page_icon="🕒", layout="centered")
@@ -581,8 +582,10 @@ with aba_hist:
                     tooltip += f" | Obs: {obs}"
                 if created:
                     tooltip += f" | Criado: {created}"
+                # Escapa com segurança para atributo title
+                tooltip_attr = html_escape.escape(tooltip, quote=True)
                 chip = (
-                    f'<span class="chip {tag_class}" title="{tooltip}">'
+                    f'<span class="chip {tag_class}" title="{tooltip_attr}">'
                     f'  <span class="time">{hhmmss}</span><span class="tag">{tag}</span>'
                     f'</span>'
                 )
