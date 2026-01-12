@@ -48,5 +48,15 @@
     "tag": "Entrada",
     "obs": "",
     "created_at": "2026-01-12T07:59:49-03:00"
+  },
+  {
+    "id": 1768230551608,
+    "usuario": "Guilherme Henrique Cavalcante",
+    "date": "2026-01-12",
+    "time": "12:02:00",
+    "label": "Manual",
+    "tag": "Saída",
+    "obs": "",
+    "created_at": "2026-01-12T12:02:00-03:00"
   }
 ]
