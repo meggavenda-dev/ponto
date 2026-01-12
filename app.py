@@ -20,7 +20,7 @@ st.set_page_config(page_title="Ponto", page_icon="🕒", layout="centered")
 
 COMPACT_CSS = """
 <style>
-/* Largura total da coluna central (compacto) */
+/* Largura total da coluna central (compacto). Se quiser mais espaço, aumente para 480px ou 600px. */
 div.block-container { max-width: 360px; padding-top: 0.5rem; }
 
 /* Base tipográfica compacta */
@@ -491,7 +491,7 @@ with aba_hist:
     if filtrados:
         # DataFrame base
         df = pd.DataFrame(filtrados)
-        for col in ["date", "time", "tag", "usuario", "label", "obs"]:
+        for col in ["date", "time", "tag", "usuario", "label", "obs", "id"]:
             if col not in df.columns:
                 df[col] = ""
 
@@ -502,14 +502,18 @@ with aba_hist:
             df["Dia_ord"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.sort_values(by=["Dia_ord", "time"])
 
-        # Agregação: lista de registros por dia
-        grouped = df.groupby("date", as_index=False).apply(lambda g: g.to_dict(orient="records")).rename(columns={0: "records"})
+        # ---------- FIX DO PANDAS: evitar as_index=False em groupby.apply ----------
+        # Lista de registros (dicts) por dia -> DataFrame com colunas ["date", "records"]
+        grouped = (
+            df.groupby("date")  # sem as_index=False
+              .apply(lambda g: g.to_dict(orient="records"))
+              .reset_index(name="records")  # <- converte para DataFrame corretamente
+        )
         grouped["Dia_BR"] = grouped["date"].apply(format_date_br)
 
         # Monta HTML com chips
         rows_html = []
         for _, row in grouped.iterrows():
-            dia_iso = row["date"]
             dia_br = row["Dia_BR"]
             registros = row["records"] or []
 
@@ -517,9 +521,7 @@ with aba_hist:
             for r in registros:
                 hhmmss = (r.get("time") or "").strip()
                 tag = (r.get("tag") or "Outro").strip()
-                # Define classe por tag (mapeada no CSS)
                 tag_class = f"chip-{tag}" if tag in ("Entrada", "Saída", "Intervalo", "Retorno", "Outro") else "chip-Outro"
-                # Conteúdo do chip: hora + badge do rótulo
                 chip = f'<span class="chip {tag_class}"><span class="time">{hhmmss}</span><span class="tag">{tag}</span></span>'
                 chips_html.append(chip)
 
@@ -544,19 +546,24 @@ with aba_hist:
 
         st.markdown(table_html, unsafe_allow_html=True)
 
-        # CSV agregado (uma linha por dia)
+        # ---------- FIX DO PANDAS também no CSV agregado ----------
         def _fmt_point(r: dict) -> str:
             hhmmss = (r.get("time") or "")
             tag = (r.get("tag") or "")
             return f"{hhmmss} ({tag})" if hhmmss or tag else ""
+
         df["pt_fmt"] = df.apply(_fmt_point, axis=1)
-        agg = df.groupby("date", as_index=False)["pt_fmt"].apply(lambda s: " · ".join([x for x in s.tolist() if x]))
-        agg = agg.rename(columns={"pt_fmt": "Pontos do dia"})
+        agg = (
+            df.groupby("date")["pt_fmt"]
+              .apply(lambda s: " · ".join([x for x in s.tolist() if x]))
+              .reset_index(name="Pontos do dia")
+        )
         agg["Dia_BR"] = agg["date"].apply(format_date_br)
         try:
             agg["Dia_ord"] = pd.to_datetime(agg["date"], format="%Y-%m-%d", errors="coerce")
         except Exception:
             agg["Dia_ord"] = pd.to_datetime(agg["date"], errors="coerce")
+
         df_view = agg[["Dia_BR", "Pontos do dia", "Dia_ord"]].sort_values("Dia_ord").drop(columns=["Dia_ord"])
         df_view = df_view.rename(columns={"Dia_BR": "Dia"})
 
@@ -629,3 +636,4 @@ st.caption(
     f"Usuário: {USER_FIXED} · DB: {GITHUB_OWNER}/{GITHUB_REPO} · {GITHUB_PATH} ({GITHUB_BRANCH}) · TZ: {TIMEZONE_NAME} · "
     f"{'Futuro permitido' if ALLOW_FUTURE else 'Futuro bloqueado'}"
 )
+
