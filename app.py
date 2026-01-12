@@ -20,72 +20,13 @@ st.set_page_config(page_title="Ponto", page_icon="🕒", layout="centered")
 
 COMPACT_CSS = """
 <style>
-/* Largura total da coluna central (compacto). Se quiser mais espaço, aumente para 480px ou 600px. */
 div.block-container { max-width: 360px; padding-top: 0.5rem; }
-
-/* Base tipográfica compacta */
 html, body, [class*="css"] { font-size: 14px; }
 h1, h2, h3 { margin: 0.2rem 0 !important; }
 .stButton>button { padding: 0.25rem 0.6rem; font-size: 0.9rem; }
 .stDownloadButton>button { padding: 0.25rem 0.5rem; font-size: 0.85rem; }
 .css-1v3fvcr, .css-5rimss, .stMarkdown { margin-bottom: 0.5rem !important; }
 .stTable, .stDataFrame { font-size: 13px; }
-
-/* Tabela do Histórico com chips */
-.hist-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.hist-table th, .hist-table td {
-  border-bottom: 1px solid #e6e6e6;
-  padding: 6px;
-  vertical-align: top;
-}
-.hist-table th { text-align: left; font-weight: 600; }
-.hist-dia { width: 100px; }
-
-/* Linha de chips (wrap se necessário) */
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-/* Estilo básico do chip (quadrado arredondado) */
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  border: 1px solid #d0d4da;
-  background: #f7f8fb;
-  color: #1f2937; /* cinza escuro */
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-/* Tag (badge dentro do chip) */
-.chip .tag {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-}
-
-/* Cores por rótulo */
-.chip-Entrada  { border-color: #2e7d32; background: #e8f5e9; color: #1b5e20; }
-.chip-Entrada .tag  { background: #c8e6c9; border-color: #2e7d32; color: #1b5e20; }
-
-.chip-Saída    { border-color: #c62828; background: #ffebee; color: #b71c1c; }
-.chip-Saída .tag    { background: #ffcdd2; border-color: #c62828; color: #b71c1c; }
-
-.chip-Intervalo{ border-color: #1565c0; background: #e3f2fd; color: #0d47a1; }
-.chip-Intervalo .tag{ background: #bbdefb; border-color: #1565c0; color: #0d47a1; }
-
-.chip-Retorno  { border-color: #6a1b9a; background: #f3e5f5; color: #4a148c; }
-.chip-Retorno .tag  { background: #e1bee7; border-color: #6a1b9a; color: #4a148c; }
-
-.chip-Outro    { border-color: #616161; background: #f5f5f5; color: #212121; }
-.chip-Outro .tag    { background: #eeeeee; border-color: #616161; color: #212121; }
 </style>
 """
 st.markdown(COMPACT_CSS, unsafe_allow_html=True)
@@ -348,7 +289,7 @@ def _save_now(rotulo: str, observacao: str):
     if ok:
         st.success("Registrado (agora).")
         st.session_state.update(hora_text_reg="")  # limpa manual
-        st.rerun()
+        st.rerun()  # substitui experimental_rerun
     else:
         st.error("Falha ao gravar no GitHub.")
 
@@ -363,7 +304,7 @@ def _save_manual(rotulo: str, observacao: str, dt_sel: datetime, allow_future: b
     if ok:
         st.success("Horário manual salvo.")
         st.session_state.update(hora_text_reg="")  # limpa manual
-        st.rerun()
+        st.rerun()  # substitui experimental_rerun
     else:
         st.error("Falha ao gravar no GitHub.")
 
@@ -453,15 +394,13 @@ with aba_hoje:
             df_view = df_view.sort_values(by=["Dia_ord", "Hora"]).drop(columns=["Dia_ord"])
         except Exception:
             pass
-        st.dataframe(df_view, height=280, use_container_width=True)  # altura maior
+        st.dataframe(df_view, height=180, use_container_width=True)
     else:
         st.info("Sem pontos hoje.")
 
-# ---------------------- ABA: HISTÓRICO (chips em uma linha por dia) ----------------------
+# ---------------------- ABA: HISTÓRICO ----------------------
 with aba_hist:
-    st.subheader("Histórico (dia em linha com chips)")
-
-    # Filtros
+    st.subheader("Histórico")
     hf1, hf2 = st.columns([1, 1])
     with hf1:
         usuario_f = st.text_input("Usuário (filtro)", value=st.session_state["usuario"])
@@ -474,7 +413,7 @@ with aba_hist:
     else:
         dt_ini, dt_fim = date.today().replace(day=1), date.today()
 
-    # Função: está no período?
+    # Filtro por período
     def in_period(r: dict) -> bool:
         try:
             d = datetime.strptime(r.get("date"), "%Y-%m-%d").date()
@@ -482,94 +421,30 @@ with aba_hist:
         except Exception:
             return False
 
-    # Filtra dados
     filtrados = [
         r for r in data
         if in_period(r) and (not usuario_f or r.get("usuario") == usuario_f)
     ]
 
     if filtrados:
-        # DataFrame base
         df = pd.DataFrame(filtrados)
-        for col in ["date", "time", "tag", "usuario", "label", "obs", "id"]:
-            if col not in df.columns:
-                df[col] = ""
-
-        # Ordenação por data/hora
+        df["Dia_BR"] = df["date"].apply(format_date_br)
+        df_view = df[["Dia_BR", "tag", "time"]].rename(columns={
+            "Dia_BR": "Dia",
+            "tag": "Rótulo",
+            "time": "Hora",
+        })
         try:
             df["Dia_ord"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
+            df_view = df_view.join(df[["Dia_ord"]])
+            df_view = df_view.sort_values(by=["Dia_ord", "Hora"]).drop(columns=["Dia_ord"])
         except Exception:
-            df["Dia_ord"] = pd.to_datetime(df["date"], errors="coerce")
-        df = df.sort_values(by=["Dia_ord", "time"])
+            pass
 
-        # ---------- FIX DO PANDAS: evitar as_index=False em groupby.apply ----------
-        # Lista de registros (dicts) por dia -> DataFrame com colunas ["date", "records"]
-        grouped = (
-            df.groupby("date")  # sem as_index=False
-              .apply(lambda g: g.to_dict(orient="records"))
-              .reset_index(name="records")  # <- converte para DataFrame corretamente
-        )
-        grouped["Dia_BR"] = grouped["date"].apply(format_date_br)
-
-        # Monta HTML com chips
-        rows_html = []
-        for _, row in grouped.iterrows():
-            dia_br = row["Dia_BR"]
-            registros = row["records"] or []
-
-            chips_html = []
-            for r in registros:
-                hhmmss = (r.get("time") or "").strip()
-                tag = (r.get("tag") or "Outro").strip()
-                tag_class = f"chip-{tag}" if tag in ("Entrada", "Saída", "Intervalo", "Retorno", "Outro") else "chip-Outro"
-                chip = f'<span class="chip {tag_class}"><span class="time">{hhmmss}</span><span class="tag">{tag}</span></span>'
-                chips_html.append(chip)
-
-            row_html = f"""
-            <tr>
-              <td class="hist-dia"><strong>{dia_br}</strong></td>
-              <td><div class="chips">{''.join(chips_html)}</div></td>
-            </tr>
-            """
-            rows_html.append(row_html)
-
-        table_html = f"""
-        <table class="hist-table">
-          <thead>
-            <tr><th class="hist-dia">Dia</th><th>Pontos</th></tr>
-          </thead>
-          <tbody>
-            {''.join(rows_html)}
-          </tbody>
-        </table>
-        """
-
-        st.markdown(table_html, unsafe_allow_html=True)
-
-        # ---------- FIX DO PANDAS também no CSV agregado ----------
-        def _fmt_point(r: dict) -> str:
-            hhmmss = (r.get("time") or "")
-            tag = (r.get("tag") or "")
-            return f"{hhmmss} ({tag})" if hhmmss or tag else ""
-
-        df["pt_fmt"] = df.apply(_fmt_point, axis=1)
-        agg = (
-            df.groupby("date")["pt_fmt"]
-              .apply(lambda s: " · ".join([x for x in s.tolist() if x]))
-              .reset_index(name="Pontos do dia")
-        )
-        agg["Dia_BR"] = agg["date"].apply(format_date_br)
-        try:
-            agg["Dia_ord"] = pd.to_datetime(agg["date"], format="%Y-%m-%d", errors="coerce")
-        except Exception:
-            agg["Dia_ord"] = pd.to_datetime(agg["date"], errors="coerce")
-
-        df_view = agg[["Dia_BR", "Pontos do dia", "Dia_ord"]].sort_values("Dia_ord").drop(columns=["Dia_ord"])
-        df_view = df_view.rename(columns={"Dia_BR": "Dia"})
+        st.dataframe(df_view, height=220, use_container_width=True)
 
         csv = df_view.to_csv(index=False).encode("utf-8")
-        st.download_button("CSV (dia e pontos agregados)", data=csv,
-                           file_name="pontos_historico_por_dia.csv", mime="text/csv")
+        st.download_button("CSV", data=csv, file_name="pontos_historico.csv", mime="text/csv")
     else:
         st.info("Sem registros no período.")
 
@@ -626,7 +501,7 @@ with aba_edit:
                     ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
                     if ok:
                         st.success(f"Horário atualizado para {new_time_final}.")
-                        st.rerun()
+                        st.rerun()  # substitui experimental_rerun
                     else:
                         st.error("Falha ao atualizar registro no GitHub.")
     else:
