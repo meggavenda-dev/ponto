@@ -8,105 +8,30 @@ import json
 import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, date, timedelta, time as dtime
-from typing import Optional, Tuple, List, Set, Dict
+from typing import Optional, Tuple, List, Set
 
 import requests
 import pandas as pd
 import streamlit as st
 from zoneinfo import ZoneInfo
-import html as html_escape  # para escapar atributos de tooltip com segurança
 
-# ---------------------- Página & Estilo ----------------------
+# ---------------------- Página & Estilo compacto ----------------------
 st.set_page_config(page_title="Ponto", page_icon="🕒", layout="centered")
 
 COMPACT_CSS = """
 <style>
-/* Largura útil maior para comportar chips sem quebrar */
-div.block-container { max-width: 600px; padding-top: 0.5rem; }
-
-/* Tipografia compacta */
+div.block-container { max-width: 360px; padding-top: 0.5rem; }
 html, body, [class*="css"] { font-size: 14px; }
 h1, h2, h3 { margin: 0.2rem 0 !important; }
 .stButton>button { padding: 0.25rem 0.6rem; font-size: 0.9rem; }
 .stDownloadButton>button { padding: 0.25rem 0.5rem; font-size: 0.85rem; }
 .css-1v3fvcr, .css-5rimss, .stMarkdown { margin-bottom: 0.5rem !important; }
 .stTable, .stDataFrame { font-size: 13px; }
-
-/* Tabela do Histórico com chips */
-.hist-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.hist-table th, .hist-table td {
-  border-bottom: 1px solid #e6e6e6;
-  padding: 6px;
-  vertical-align: top;
-}
-.hist-table th { text-align: left; font-weight: 600; }
-.hist-dia   { width: 110px; }
-.hist-total { width: 80px; text-align: right; white-space: nowrap; }
-
-/* Linha de chips: sem quebra + scroll horizontal */
-.chips {
-  display: flex;
-  flex-wrap: nowrap;      /* não quebra linha */
-  gap: 8px;
-  overflow-x: auto;       /* scroll horizontal */
-  scrollbar-width: thin;  /* Firefox */
-}
-.chips::-webkit-scrollbar { height: 6px; }                 /* Chrome/Edge/Safari */
-.chips::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 6px; }
-.chips::-webkit-scrollbar-thumb { background: #c7ccd3; border-radius: 6px; }
-.chips::-webkit-scrollbar-thumb:hover { background: #a0a7b0; }
-
-/* Chip quadrado/compacto */
-.chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 4px 8px;
-  min-width: 96px;                 /* largura mínima */
-  border-radius: 4px;
-  border: 1px solid #d0d4da;
-  background: #f7f8fb;
-  color: #1f2937;
-  font-weight: 600;
-  white-space: nowrap;
-  box-sizing: border-box;
-}
-
-.chip .time {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-variant-numeric: tabular-nums;   /* dígitos alinhados */
-  font-weight: 700;
-}
-
-.chip .tag {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid transparent;
-}
-
-/* Cores por rótulo */
-.chip-Entrada  { border-color: #2e7d32; background: #e8f5e9; color: #1b5e20; }
-.chip-Entrada .tag  { background: #c8e6c9; border-color: #2e7d32; color: #1b5e20; }
-
-.chip-Saída    { border-color: #c62828; background: #ffebee; color: #b71c1c; }
-.chip-Saída .tag    { background: #ffcdd2; border-color: #c62828; color: #b71c1c; }
-
-.chip-Intervalo{ border-color: #1565c0; background: #e3f2fd; color: #0d47a1; }
-.chip-Intervalo .tag{ background: #bbdefb; border-color: #1565c0; color: #0d47a1; }
-
-.chip-Retorno  { border-color: #6a1b9a; background: #f3e5f5; color: #4a148c; }
-.chip-Retorno .tag  { background: #e1bee7; border-color: #6a1b9a; color: #4a148c; }
-
-.chip-Outro    { border-color: #616161; background: #f5f5f5; color: #212121; }
-.chip-Outro .tag    { background: #eeeeee; border-color: #616161; color: #212121; }
 </style>
 """
 st.markdown(COMPACT_CSS, unsafe_allow_html=True)
 
-# ---------------------- Config ----------------------
+# ---------------------- Defaults / Config ----------------------
 DEFAULT_OWNER   = "meggavenda-dev"
 DEFAULT_REPO    = "registro-ponto-db"
 DEFAULT_PATH    = "pontos.json"
@@ -114,6 +39,7 @@ DEFAULT_BRANCH  = "main"
 DEFAULT_TZ_NAME = "America/Sao_Paulo"
 DEFAULT_ALLOW_FUTURE = "false"
 
+# Usuário fixo
 USER_FIXED = "Guilherme Henrique Cavalcante"
 
 def cfg(key: str, default: str = "") -> str:
@@ -324,7 +250,7 @@ store = GithubJSONStore(
     branch=GITHUB_BRANCH,
 )
 
-# ---------------------- Estado ----------------------
+# ---------------------- Inicialização de estado ----------------------
 def _init_session_defaults():
     st.session_state.setdefault("usuario", USER_FIXED)      # usuário sempre fixo
     st.session_state.setdefault("dia_sel", date.today())
@@ -363,7 +289,7 @@ def _save_now(rotulo: str, observacao: str):
     if ok:
         st.success("Registrado (agora).")
         st.session_state.update(hora_text_reg="")  # limpa manual
-        st.rerun()
+        st.rerun()  # substitui experimental_rerun
     else:
         st.error("Falha ao gravar no GitHub.")
 
@@ -378,7 +304,7 @@ def _save_manual(rotulo: str, observacao: str, dt_sel: datetime, allow_future: b
     if ok:
         st.success("Horário manual salvo.")
         st.session_state.update(hora_text_reg="")  # limpa manual
-        st.rerun()
+        st.rerun()  # substitui experimental_rerun
     else:
         st.error("Falha ao gravar no GitHub.")
 
@@ -468,49 +394,13 @@ with aba_hoje:
             df_view = df_view.sort_values(by=["Dia_ord", "Hora"]).drop(columns=["Dia_ord"])
         except Exception:
             pass
-        st.dataframe(df_view, height=320, use_container_width=True)
+        st.dataframe(df_view, height=180, use_container_width=True)
     else:
         st.info("Sem pontos hoje.")
 
-# ---------------------- Função: total trabalhado por dia ----------------------
-def total_trabalhado_hhmm_por_dia(df: pd.DataFrame) -> Dict[str, str]:
-    """
-    Soma pares Entrada -> Saída por 'date', em ordem de 'time'.
-    Retorna {date_iso: "HH:MM"}.
-    """
-    totals: Dict[str, str] = {}
-    if df.empty:
-        return totals
-    for day_iso, g in df.groupby("date"):
-        pares_secs = 0
-        start: Optional[str] = None
-        g_sorted = g.sort_values(by="time")
-        for _, row in g_sorted.iterrows():
-            tag = (row.get("tag") or "").strip()
-            hh = (row.get("time") or "").strip()
-            if not hh:
-                continue
-            if tag == "Entrada" and start is None:
-                start = hh
-            elif tag == "Saída" and start is not None:
-                try:
-                    dt1 = datetime.strptime(day_iso + " " + start, "%Y-%m-%d %H:%M:%S")
-                    dt2 = datetime.strptime(day_iso + " " + hh,   "%Y-%m-%d %H:%M:%S")
-                    if dt2 >= dt1:
-                        pares_secs += int((dt2 - dt1).total_seconds())
-                except Exception:
-                    pass
-                start = None
-        h = pares_secs // 3600
-        m = (pares_secs % 3600) // 60
-        totals[day_iso] = f"{h:02d}:{m:02d}"
-    return totals
-
-# ---------------------- ABA: HISTÓRICO (chips uma linha + total) ----------------------
+# ---------------------- ABA: HISTÓRICO ----------------------
 with aba_hist:
-    st.subheader("Histórico (dia em linha com chips + total)")
-
-    # Filtros
+    st.subheader("Histórico")
     hf1, hf2 = st.columns([1, 1])
     with hf1:
         usuario_f = st.text_input("Usuário (filtro)", value=st.session_state["usuario"])
@@ -523,7 +413,7 @@ with aba_hist:
     else:
         dt_ini, dt_fim = date.today().replace(day=1), date.today()
 
-    # Função: está no período?
+    # Filtro por período
     def in_period(r: dict) -> bool:
         try:
             d = datetime.strptime(r.get("date"), "%Y-%m-%d").date()
@@ -531,120 +421,30 @@ with aba_hist:
         except Exception:
             return False
 
-    # Filtra dados
     filtrados = [
         r for r in data
         if in_period(r) and (not usuario_f or r.get("usuario") == usuario_f)
     ]
 
     if filtrados:
-        # DataFrame base
         df = pd.DataFrame(filtrados)
-        for col in ["date", "time", "tag", "usuario", "label", "obs", "id", "created_at"]:
-            if col not in df.columns:
-                df[col] = ""
-
-        # Ordenação por data/hora
+        df["Dia_BR"] = df["date"].apply(format_date_br)
+        df_view = df[["Dia_BR", "tag", "time"]].rename(columns={
+            "Dia_BR": "Dia",
+            "tag": "Rótulo",
+            "time": "Hora",
+        })
         try:
             df["Dia_ord"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
+            df_view = df_view.join(df[["Dia_ord"]])
+            df_view = df_view.sort_values(by=["Dia_ord", "Hora"]).drop(columns=["Dia_ord"])
         except Exception:
-            df["Dia_ord"] = pd.to_datetime(df["date"], errors="coerce")
-        df = df.sort_values(by=["Dia_ord", "time"])
+            pass
 
-        # Registros por dia -> DataFrame ["date", "records"]
-        grouped = (
-            df.groupby("date")
-              .apply(lambda g: g.to_dict(orient="records"))
-              .reset_index(name="records")
-        )
-        grouped["Dia_BR"] = grouped["date"].apply(format_date_br)
+        st.dataframe(df_view, height=220, use_container_width=True)
 
-        # Totais por dia (HH:MM)
-        totals_map = total_trabalhado_hhmm_por_dia(df)
-
-        # Monta HTML com chips e coluna total
-        rows_html = []
-        for _, row in grouped.iterrows():
-            dia_iso = row["date"]
-            dia_br = row["Dia_BR"]
-            registros = row["records"] or []
-
-            chips_html = []
-            for r in registros:
-                hhmmss = (r.get("time") or "").strip()
-                tag = (r.get("tag") or "Outro").strip()
-                tag_class = f"chip-{tag}" if tag in ("Entrada", "Saída", "Intervalo", "Retorno", "Outro") else "chip-Outro"
-                # Tooltip com observação e created_at (se existirem)
-                obs = (r.get("obs") or "").strip()
-                created = (r.get("created_at") or "").strip()
-                tooltip = f"{tag} — {hhmmss}"
-                if obs:
-                    tooltip += f" | Obs: {obs}"
-                if created:
-                    tooltip += f" | Criado: {created}"
-                # Escapa com segurança para atributo title
-                tooltip_attr = html_escape.escape(tooltip, quote=True)
-                chip = (
-                    f'<span class="chip {tag_class}" title="{tooltip_attr}">'
-                    f'  <span class="time">{hhmmss}</span><span class="tag">{tag}</span>'
-                    f'</span>'
-                )
-                chips_html.append(chip)
-
-            total_hhmm = totals_map.get(dia_iso, "00:00")
-
-            row_html = f"""
-            <tr>
-              <td class="hist-dia"><strong>{dia_br}</strong></td>
-              <td><div class="chips">{''.join(chips_html)}</div></td>
-              <td class="hist-total"><code>{total_hhmm}</code></td>
-            </tr>
-            """
-            rows_html.append(row_html)
-
-        table_html = f"""
-        <table class="hist-table">
-          <thead>
-            <tr>
-              <th class="hist-dia">Dia</th>
-              <th>Pontos</th>
-              <th class="hist-total">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {''.join(rows_html)}
-          </tbody>
-        </table>
-        """
-
-        st.markdown(table_html, unsafe_allow_html=True)
-
-        # ---------- CSV agregado (Dia, Pontos do dia, Total) ----------
-        def _fmt_point(r: dict) -> str:
-            hhmmss = (r.get("time") or "")
-            tag = (r.get("tag") or "")
-            return f"{hhmmss} ({tag})" if hhmmss or tag else ""
-
-        df["pt_fmt"] = df.apply(_fmt_point, axis=1)
-        points_agg = (
-            df.groupby("date")["pt_fmt"]
-              .apply(lambda s: " · ".join([x for x in s.tolist() if x]))
-              .reset_index(name="Pontos do dia")
-        )
-        # Junta com totais
-        totals_df = pd.DataFrame({"date": list(totals_map.keys()), "Total": list(totals_map.values())})
-        csv_df = points_agg.merge(totals_df, on="date", how="left")
-        csv_df["Dia_BR"] = csv_df["date"].apply(format_date_br)
-        try:
-            csv_df["Dia_ord"] = pd.to_datetime(csv_df["date"], format="%Y-%m-%d", errors="coerce")
-        except Exception:
-            csv_df["Dia_ord"] = pd.to_datetime(csv_df["date"], errors="coerce")
-        csv_view = csv_df[["Dia_BR", "Pontos do dia", "Total", "Dia_ord"]].sort_values("Dia_ord").drop(columns=["Dia_ord"])
-        csv_view = csv_view.rename(columns={"Dia_BR": "Dia"})
-
-        csv_bytes = csv_view.to_csv(index=False).encode("utf-8")
-        st.download_button("CSV (dia, pontos e total)", data=csv_bytes,
-                           file_name="pontos_historico_por_dia.csv", mime="text/csv")
+        csv = df_view.to_csv(index=False).encode("utf-8")
+        st.download_button("CSV", data=csv, file_name="pontos_historico.csv", mime="text/csv")
     else:
         st.info("Sem registros no período.")
 
@@ -701,7 +501,7 @@ with aba_edit:
                     ok = store.replace_record(GITHUB_PATH, record_id=chosen_id, new_time=new_time_final)
                     if ok:
                         st.success(f"Horário atualizado para {new_time_final}.")
-                        st.rerun()
+                        st.rerun()  # substitui experimental_rerun
                     else:
                         st.error("Falha ao atualizar registro no GitHub.")
     else:
@@ -711,3 +511,5 @@ st.caption(
     f"Usuário: {USER_FIXED} · DB: {GITHUB_OWNER}/{GITHUB_REPO} · {GITHUB_PATH} ({GITHUB_BRANCH}) · TZ: {TIMEZONE_NAME} · "
     f"{'Futuro permitido' if ALLOW_FUTURE else 'Futuro bloqueado'}"
 )
+
+
